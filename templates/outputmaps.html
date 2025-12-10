@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Plotly Carousel (graphJSON list)</title>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f8f9fa;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+
+    .carousel {
+      position: relative;
+      width: 700px;
+      height: 500px;
+      overflow: hidden;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+      background-color: white;
+    }
+
+    .carousel-track {
+      display: flex;
+      transition: transform 0.5s ease;
+      height: 100%;
+    }
+
+    .carousel-item {
+      min-width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .carousel button {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      background: rgba(0,0,0,0.5);
+      border: none;
+      color: white;
+      padding: 10px;
+      font-size: 18px;
+      cursor: pointer;
+      border-radius: 50%;
+    }
+
+    .carousel button:hover {
+      background: rgba(0,0,0,0.7);
+    }
+
+    .prev { left: 10px; }
+    .next { right: 10px; }
+
+    main {
+      flex: 1; /* take remaining space */
+      padding: 2rem;
+    }
+
+  </style>
+</head>
+<body>
+{% include 'navbar.html' %}
+<main style="padding: 2rem;">
+  <div class="carousel">
+    <div class="carousel-track">
+      {% for fig in graphJSON %}
+        <div class="carousel-item">
+          <div id="plot-{{ loop.index0 }}" style="width:100%;height:100%;"></div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <button class="prev">&#10094;</button>
+    <button class="next">&#10095;</button>
+  </div>
+</main>
+
+<script>
+  // graphJSON is now a list of JSON-encoded Plotly figures
+  var plots = {{ graphJSON | safe }};
+
+  // Render each figure in its respective div
+  plots.forEach(function(figJSON, index) {
+      var fig = typeof figJSON === "string" ? JSON.parse(figJSON) : figJSON;
+      Plotly.newPlot(`plot-${index}`, fig.data, fig.layout || {}, {responsive: true});
+  });
+
+  // --- Carousel behavior ---
+  const track = document.querySelector('.carousel-track');
+  const items = Array.from(track.children);
+  const nextButton = document.querySelector('.next');
+  const prevButton = document.querySelector('.prev');
+  let currentIndex = 0;
+
+  function updateCarousel() {
+    track.style.transform = `translateX(-${currentIndex * 100}%)`;
+  }
+
+  nextButton.addEventListener('click', () => {
+    currentIndex = (currentIndex + 1) % items.length;
+    updateCarousel();
+  });
+
+  prevButton.addEventListener('click', () => {
+    currentIndex = (currentIndex - 1 + items.length) % items.length;
+    updateCarousel();
+  });
+</script>
+
+</body>
+</html>

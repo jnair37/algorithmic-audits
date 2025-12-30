@@ -326,4 +326,4 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
             """)
 
 # Cell 6: Launch the interface
-demo.launch(debug=True)
+demo.launch(debug=True, share=True)

@@ -5,7 +5,14 @@ import numpy as np
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 import warnings
-
+from transformers import AutoProcessor, AutoModelForCausalLM, AutoTokenizer
+from datasets import load_dataset
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+from captum.attr import IntegratedGradients
+import gradio as gr
+import io
 
 # ============================================================================
 # SHAP-Compatible Output Format
@@ -1006,8 +1013,8 @@ Q: Should Jane Smith be advanced to the next round for the position of Data Anal
 #analyze_text(sample_corpus)
 
 lm_model_name = "gpt2"  # test small model
-language_model = AutoModelForCausalLM.from_pretrained(model_name)
-language_tokenizer = AutoTokenizer.from_pretrained(model_name)
+language_model = AutoModelForCausalLM.from_pretrained(lm_model_name)
+language_tokenizer = AutoTokenizer.from_pretrained(lm_model_name)
 
 # Cell 2: Shared utility function
 def highlight_text(text, highlights, outputs, title=""):

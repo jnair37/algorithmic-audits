@@ -8,7 +8,15 @@ from captum.attr import IntegratedGradients
 import gradio as gr
 import io
 from resume_utility import sample_corpus, process_resume, reset_resume_text, save_resume_version, load_resume_version, clear_resume_comparison
-from image_utility import test_img, run_integrated_gradients
+from image_utility import (
+    test_img, 
+    run_integrated_gradients, 
+    generate_caption_only,
+    run_gradcam_analysis,
+    compare_multiple_images,
+    get_sample_image_choices,
+    get_sample_image_by_index
+)
 from credit_utility import sample_credit_data, predict_credit_risk, get_feature_importance, compare_scenarios, reset_credit_data, export_credit_report
 
 
@@ -99,29 +107,119 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
 
         # Tab 2: Image Captioner
         with gr.Tab("Image Captioner"):
-            gr.Markdown("# Image Captioner")
-            gr.Markdown("Click the button to generate a caption and visualize which image regions influenced each token.")
+            gr.Markdown("# Image Captioner with Interpretability")
+            gr.Markdown("Analyze image captioning models with multiple explanation methods and image sources.")
 
             with gr.Row():
-                with gr.Column():
-                    test_image_display = gr.Image(value=test_img, label="Test Image", interactive=False)
-                    run_btn = gr.Button("Generate Caption + Explain w/ Integrated Gradients", variant="primary")
+                with gr.Column(scale=1):
+                    gr.Markdown("### Image Selection")
+                    image_source_dropdown = gr.Dropdown(
+                        choices=get_sample_image_choices(),
+                        value="Sample 1",
+                        label="Select Image Source",
+                        interactive=True
+                    )
+                    image_upload = gr.Image(
+                        label="Upload Custom Image (when 'Upload' is selected)",
+                        type="numpy",
+                        interactive=True
+                    )
+                    image_preview = gr.Image(
+                        value=test_img,
+                        label="Current Image",
+                        interactive=False
+                    )
+                    
+                    gr.Markdown("### Analysis Options")
+                    analysis_method = gr.Radio(
+                        choices=["Integrated Gradients", "GradCAM", "Multi-Image Comparison"],
+                        value="Integrated Gradients",
+                        label="Explanation Method"
+                    )
+                    num_tokens_slider = gr.Slider(
+                        minimum=1,
+                        maximum=5,
+                        value=3,
+                        step=1,
+                        label="Number of Tokens to Explain (IG only)",
+                        visible=True
+                    )
+                    
+                    with gr.Row():
+                        run_caption_btn = gr.Button("Generate Caption Only", variant="secondary")
+                        run_analysis_btn = gr.Button("Run Full Analysis", variant="primary")
 
-                with gr.Column():
+                with gr.Column(scale=2):
+                    gr.Markdown("### Results")
                     caption_output = gr.Textbox(label="Generated Caption", lines=2)
-                    viz_output = gr.Image(label="Integrated Gradients Visualization")
+                    viz_output = gr.Image(label="Visualization")
 
-            run_btn.click(
-                fn=run_integrated_gradients,
-                inputs=[test_image_display],
+            # Event handlers for image selection
+            def update_preview(choice, uploaded_img):
+                if choice == "Upload":
+                    if uploaded_img is not None:
+                        return Image.fromarray(uploaded_img.astype(np.uint8))
+                    return None
+                else:
+                    return get_sample_image_by_index(choice)
+            
+            image_source_dropdown.change(
+                fn=update_preview,
+                inputs=[image_source_dropdown, image_upload],
+                outputs=image_preview
+            )
+            
+            image_upload.change(
+                fn=update_preview,
+                inputs=[image_source_dropdown, image_upload],
+                outputs=image_preview
+            )
+
+            # Toggle num_tokens slider visibility
+            def toggle_slider(method):
+                return gr.update(visible=(method == "Integrated Gradients"))
+            
+            analysis_method.change(
+                fn=toggle_slider,
+                inputs=analysis_method,
+                outputs=num_tokens_slider
+            )
+
+            # Caption only button
+            run_caption_btn.click(
+                fn=generate_caption_only,
+                inputs=[image_upload, image_source_dropdown],
+                outputs=caption_output
+            )
+
+            # Full analysis button
+            def run_selected_analysis(uploaded_img, img_source, method, num_tokens):
+                if method == "Integrated Gradients":
+                    return run_integrated_gradients(uploaded_img, img_source, num_tokens)
+                elif method == "GradCAM":
+                    return run_gradcam_analysis(uploaded_img, img_source)
+                elif method == "Multi-Image Comparison":
+                    return compare_multiple_images(num_images=3)
+                else:
+                    return "Unknown method", None
+            
+            run_analysis_btn.click(
+                fn=run_selected_analysis,
+                inputs=[image_upload, image_source_dropdown, analysis_method, num_tokens_slider],
                 outputs=[caption_output, viz_output]
             )
 
             gr.Markdown("""
-            ### Explanation:
-            - **Top row**: Original image with each explained token labeled
-            - **Bottom row**: Attribution heatmaps showing which pixels were most important (red = high importance)
-            - The visualization shows the first 3 content tokens from the generated caption
+            ### Explanation Methods:
+            - **Integrated Gradients**: Token-by-token attribution showing which pixels influenced each word
+            - **GradCAM**: Spatial attention map showing overall important regions
+            - **Multi-Image Comparison**: Compare captions and attributions across multiple images
+            
+            ### How to Use:
+            1. Select an image source (sample dataset images or upload your own)
+            2. Choose an explanation method
+            3. Click "Run Full Analysis" to see the caption with visual explanations
+            4. For Integrated Gradients, adjust the number of tokens to explain
             """)
 
         # Tab 3: Credit Risk Analyzer

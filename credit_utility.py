@@ -16,6 +16,39 @@ import pickle
 import io
 from datetime import datetime
 
+# ADDED: Track current model
+_current_model_name = "Alfazril/credit-risk-prediction"
+
+# ADDED: Model registry
+CREDIT_MODELS = {
+    "Alfazril/credit-risk-prediction": {
+        "repo_id": "Alfazril/credit-risk-prediction",
+        "filename": "credit_risk_xgboost_model.pkl",
+        "type": "xgboost",
+        "description": "XGBoost ensemble model"
+    },
+    # TODO: CHANGE MODELS
+    "Random Forest Baseline": {
+        "repo_id": None,
+        "filename": None,
+        "type": "random_forest",
+        "description": "Synthetic Random Forest model"
+    },
+    "Gradient Boosting": {
+        "repo_id": None,
+        "filename": None,
+        "type": "gradient_boosting",
+        "description": "Gradient Boosting Classifier"
+    },
+    "Logistic Regression": {
+        "repo_id": None,
+        "filename": None,
+        "type": "logistic",
+        "description": "Interpretable linear model"
+    }
+}
+
+
 # Set style for visualizations
 sns.set_style("whitegrid")
 
@@ -46,46 +79,90 @@ def _initialize_model():
     if _model is not None:
         return
     
-    print("Initializing credit risk model...")
+    print(f"Initializing credit risk model: {_current_model_name}...")
     
-    try:
+    model_config = CREDIT_MODELS[_current_model_name]
+    
+    if model_config["repo_id"] is not None:
         # Try to download from HuggingFace
-        model_path = hf_hub_download(
-            repo_id="Alfazril/credit-risk-prediction",
-            filename="credit_risk_xgboost_model.pkl"
-        )
-        
         try:
-            _model = joblib.load(model_path)
-        except:
-            with open(model_path, "rb") as f:
-                _model = pickle.load(f)
-        
-        print("Model loaded from HuggingFace")
-        
-    except Exception as e:
-        print(f"Could not load HuggingFace model: {e}")
-        print("Creating synthetic model for demonstration...")
-        
-        # Create synthetic model
-        _model = RandomForestClassifier(n_estimators=100, random_state=42)
-        _scaler = StandardScaler()
-        
-        np.random.seed(42)
-        n_samples = 1000
-        X_synthetic = np.random.randn(n_samples, 29)
-        y_synthetic = ((X_synthetic[:, 3] > 0.5) |  # High loan amount
-                       (X_synthetic[:, 10] > 0.7) |  # High loan to income
-                       (X_synthetic[:, 8] > 0.6)).astype(int)  # High combined risk
-        
-        X_synthetic_scaled = _scaler.fit_transform(X_synthetic)
-        _model.fit(X_synthetic_scaled, y_synthetic)
-        print("Synthetic model created")
+            model_path = hf_hub_download(
+                repo_id=model_config["repo_id"],
+                filename=model_config["filename"]
+            )
+            
+            try:
+                _model = joblib.load(model_path)
+            except:
+                with open(model_path, "rb") as f:
+                    _model = pickle.load(f)
+            
+            print(f"Model loaded from HuggingFace: {_current_model_name}")
+            return
+            
+        except Exception as e:
+            print(f"Could not load HuggingFace model: {e}")
     
-    # Initialize SHAP explainer
-    _explainer = shap.TreeExplainer(_model)
-    print("SHAP explainer initialized")
+    # Create synthetic models based on type
+    print(f"Creating synthetic {model_config['type']} model...")
+    _scaler = StandardScaler()
+    
+    np.random.seed(42)
+    n_samples = 1000
+    X_synthetic = np.random.randn(n_samples, 29)
+    y_synthetic = ((X_synthetic[:, 3] > 0.5) |  # High loan amount
+                   (X_synthetic[:, 10] > 0.7) |  # High loan to income
+                   (X_synthetic[:, 8] > 0.6)).astype(int)  # High combined risk
+    
+    if model_config["type"] == "random_forest":
+        from sklearn.ensemble import RandomForestClassifier
+        _model = RandomForestClassifier(n_estimators=100, random_state=42)
+    elif model_config["type"] == "gradient_boosting":
+        from sklearn.ensemble import GradientBoostingClassifier
+        _model = GradientBoostingClassifier(n_estimators=100, random_state=42)
+    elif model_config["type"] == "logistic":
+        from sklearn.linear_model import LogisticRegression
+        _model = LogisticRegression(random_state=42, max_iter=1000)
+    else:
+        # Default to Random Forest
+        from sklearn.ensemble import RandomForestClassifier
+        _model = RandomForestClassifier(n_estimators=100, random_state=42)
+    
+    X_synthetic_scaled = _scaler.fit_transform(X_synthetic)
+    _model.fit(X_synthetic_scaled, y_synthetic)
+    print(f"Synthetic {model_config['type']} model created")
 
+# ADDED: Model management functions
+def get_credit_model_choices():
+    """Return list of available credit risk models"""
+    return list(CREDIT_MODELS.keys())
+
+def get_current_model_name():
+    """Return the currently selected model name"""
+    return _current_model_name
+
+def switch_credit_model(model_name):
+    """Switch to a different credit risk model"""
+    global _model, _scaler, _explainer, _current_model_name
+    
+    if model_name not in CREDIT_MODELS:
+        return f"❌ Unknown model: {model_name}", f"**Model:** {_current_model_name}"
+    
+    # Reset current model
+    _model = None
+    _scaler = None
+    _explainer = None
+    _current_model_name = model_name
+    
+    # Initialize new model
+    _initialize_model()
+    _explainer = shap.TreeExplainer(_model)
+    
+    model_info = CREDIT_MODELS[model_name]
+    status_msg = f"✅ Loaded: {model_name}\n\n*{model_info['description']}*"
+    model_display = f"**Model:** {model_name}"
+    
+    return status_msg, model_display
 
 def sample_credit_data():
     """Returns default sample credit applicant data"""
@@ -211,9 +288,12 @@ def predict_credit_risk(age, income, credit_score, debt_ratio,
     decision = "APPROVED" if prediction == 0 else "DENIED"
     decision_color = "#28a745" if decision == "APPROVED" else "#dc3545"
     
-    # Create HTML output
+    # Create HTML output with model name
     html_output = f"""
     <div style="padding: 20px; border-radius: 10px; background-color: #f8f9fa;">
+        <div style="font-size: 11px; color: #666; margin-bottom: 10px; text-align: center;">
+            Using model: <strong>{_current_model_name}</strong>
+        </div>
         <h2 style="text-align: center; color: {color};">{risk_level}</h2>
         <div style="text-align: center; margin: 20px 0;">
             <div style="font-size: 48px; font-weight: bold; color: {color};">
@@ -244,7 +324,10 @@ def predict_credit_risk(age, income, credit_score, debt_ratio,
     # Generate feature importance plot
     fig = get_feature_importance(X_scaled, method)
     
-    return html_output, fig
+    # Model display
+    model_display = f"**Model:** {_current_model_name}"
+    
+    return html_output, fig, model_display
 
 
 def get_feature_importance(X_scaled, method):

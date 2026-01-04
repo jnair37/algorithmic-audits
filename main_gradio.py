@@ -7,7 +7,16 @@ from PIL import Image
 from captum.attr import IntegratedGradients
 import gradio as gr
 import io
-from resume_utility import sample_corpus, process_resume, reset_resume_text, save_resume_version, load_resume_version, clear_resume_comparison
+from resume_utility import (
+    sample_corpus, 
+    process_resume,
+    reset_resume_text, 
+    save_resume_version, 
+    load_resume_version, 
+    clear_resume_comparison,
+    get_resume_model_choices,      # NEW
+    switch_resume_model
+)
 from image_utility import (
     test_img, 
     run_integrated_gradients, 
@@ -15,9 +24,20 @@ from image_utility import (
     run_gradcam_analysis,
     compare_multiple_images,
     get_sample_image_choices,
-    get_sample_image_by_index
+    get_sample_image_by_index,
+    get_image_model_choices,       # NEW
+    switch_image_model
 )
-from credit_utility import sample_credit_data, predict_credit_risk, get_feature_importance, compare_scenarios, reset_credit_data, export_credit_report
+from credit_utility import (
+    sample_credit_data, 
+    predict_credit_risk, 
+    get_feature_importance, 
+    compare_scenarios, 
+    reset_credit_data, 
+    export_credit_report,
+    get_credit_model_choices,      # NEW
+    switch_credit_model            # NEW
+)
 
 
 # Cell 5: Create the Gradio Interface
@@ -29,6 +49,17 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
         # Tab 1: Resume Screener
         with gr.Tab("Resume Screener"):
             gr.Markdown("### Resume Screener")
+            # ADDED: Model selection dropdown
+            with gr.Row():
+                resume_model_dropdown = gr.Dropdown(
+                    choices=get_resume_model_choices(),
+                    value=get_resume_model_choices()[0],
+                    label="Select Resume Screening Model",
+                    interactive=True,
+                    scale=3
+                )
+                resume_model_status = gr.Markdown("")
+    
             with gr.Row():
                 # Left column - Text editor
                 with gr.Column(scale=1):
@@ -55,6 +86,8 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
                 # Middle column - Current analysis
                 with gr.Column(scale=1):
                     gr.Markdown("### Current Analysis")
+                    # ADDED: Show current model being used
+                    resume_current_model_display = gr.Markdown("**Model:** Loading...")
                     resume_html_output = gr.HTML(
                         label="Current Highlights",
                         value="<p>Click 'Analyze' to see results...</p>"
@@ -74,11 +107,11 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
                         value="<p>No comparison loaded. Save a version and select it from the dropdown to compare.</p>"
                     )
 
-            # Resume tab event handlers
+            # MODIFIED: Added resume_current_model_display to outputs
             resume_analyze_btn.click(
                 fn=process_resume,
                 inputs=[resume_text_input, resume_method_dropdown],
-                outputs=resume_html_output
+                outputs=[resume_html_output, resume_current_model_display]  # ADDED 2nd output
             )
 
             resume_reset_btn.click(
@@ -105,10 +138,28 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
                 outputs=resume_comparison_output
             )
 
+            # ADDED: Handle model selection changes
+            resume_model_dropdown.change(
+                fn=switch_resume_model,
+                inputs=resume_model_dropdown,
+                outputs=[resume_model_status, resume_current_model_display]
+            )
+
         # Tab 2: Image Captioner
         with gr.Tab("Image Captioner"):
             gr.Markdown("# Image Captioner with Interpretability")
             gr.Markdown("Analyze image captioning models with multiple explanation methods and image sources.")
+
+            # ADDED: Model selection dropdown
+            with gr.Row():
+                image_model_dropdown = gr.Dropdown(
+                    choices=get_image_model_choices(),
+                    value=get_image_model_choices()[0],
+                    label="Select Image Captioning Model",
+                    interactive=True,
+                    scale=3
+                )
+                image_model_status = gr.Markdown("", scale=1)
 
             with gr.Row():
                 with gr.Column(scale=1):
@@ -151,6 +202,8 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
 
                 with gr.Column(scale=2):
                     gr.Markdown("### Results")
+                    # ADDED: Show current model
+                    image_current_model_display = gr.Markdown("**Model:** Loading...")
                     caption_output = gr.Textbox(label="Generated Caption", lines=2)
                     viz_output = gr.Image(label="Visualization")
 
@@ -185,28 +238,45 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
                 outputs=num_tokens_slider
             )
 
-            # Caption only button
+            # ADDED: New wrapper function to include model display
+            def caption_with_model(uploaded_img, img_source):
+                caption = generate_caption_only(uploaded_img, img_source)
+                from image_utility import get_current_model_name
+                model_display = f"**Model:** {get_current_model_name()}"
+                return caption, model_display
+
+            # MODIFIED: Added model_display to outputs
             run_caption_btn.click(
-                fn=generate_caption_only,
+                fn=caption_with_model,
                 inputs=[image_upload, image_source_dropdown],
-                outputs=caption_output
+                outputs=[caption_output, image_current_model_display]  # ADDED 2nd output
             )
 
             # Full analysis button
             def run_selected_analysis(uploaded_img, img_source, method, num_tokens):
                 if method == "Integrated Gradients":
-                    return run_integrated_gradients(uploaded_img, img_source, num_tokens)
+                    caption, viz = run_integrated_gradients(uploaded_img, img_source, num_tokens)
                 elif method == "GradCAM":
-                    return run_gradcam_analysis(uploaded_img, img_source)
+                    caption, viz = run_gradcam_analysis(uploaded_img, img_source)
                 elif method == "Multi-Image Comparison":
-                    return compare_multiple_images(num_images=3)
+                    caption, viz = compare_multiple_images(num_images=3)
                 else:
                     return "Unknown method", None
-            
+                from image_utility import get_current_model_name
+                model_display = f"**Model:** {get_current_model_name()}"
+                return caption, viz, model_display  # ADDED 3rd return value
+
             run_analysis_btn.click(
                 fn=run_selected_analysis,
                 inputs=[image_upload, image_source_dropdown, analysis_method, num_tokens_slider],
                 outputs=[caption_output, viz_output]
+            )
+
+            # ADDED: Handle model changes
+            image_model_dropdown.change(
+                fn=switch_image_model,
+                inputs=image_model_dropdown,
+                outputs=[image_model_status, image_current_model_display]
             )
 
             gr.Markdown("""
@@ -227,6 +297,17 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
             gr.Markdown("### Credit Risk Model Auditor")
             gr.Markdown("Analyze credit risk predictions and understand which factors influence the model's decisions.")
             
+            # ADDED: Model selection dropdown
+            with gr.Row():
+                credit_model_dropdown = gr.Dropdown(
+                    choices=get_credit_model_choices(),
+                    value=get_credit_model_choices()[0],
+                    label="Select Credit Risk Model",
+                    interactive=True,
+                    scale=3
+                )
+                credit_model_status = gr.Markdown("", scale=1)
+
             with gr.Row():
                 # Left column - Input features
                 with gr.Column(scale=1):
@@ -254,6 +335,8 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
                 # Middle column - Prediction results
                 with gr.Column(scale=1):
                     gr.Markdown("### Risk Assessment")
+                    # ADDED: Show current model
+                    credit_current_model_display = gr.Markdown("**Model:** Loading...")
                     credit_risk_output = gr.HTML(
                         label="Risk Prediction",
                         value="<p>Enter applicant information and click 'Predict Risk'...</p>"
@@ -274,8 +357,9 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
                     credit_scenario_plot = gr.Plot(label="Scenario Comparison")
                     credit_export_btn = gr.Button("📄 Export Analysis Report", variant="secondary")
                     credit_export_status = gr.Markdown("")
+            # event handlers:
 
-            # Credit tab event handlers
+            # MODIFIED: Added credit_current_model_display to outputs
             credit_predict_btn.click(
                 fn=predict_credit_risk,
                 inputs=[
@@ -283,7 +367,7 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
                     credit_employment_years, credit_loan_amount, credit_num_accounts,
                     credit_delinquencies, credit_method_dropdown
                 ],
-                outputs=[credit_risk_output, credit_feature_plot]
+                outputs=[credit_risk_output, credit_feature_plot, credit_current_model_display]  # ADDED 3rd output
             )
 
             credit_reset_btn.click(
@@ -314,6 +398,13 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
                     credit_delinquencies, credit_risk_output, credit_feature_plot
                 ],
                 outputs=credit_export_status
+            )
+
+            # ADDED: Handle model changes
+            credit_model_dropdown.change(
+                fn=switch_credit_model,
+                inputs=credit_model_dropdown,
+                outputs=[credit_model_status, credit_current_model_display]
             )
 
             gr.Markdown("""

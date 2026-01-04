@@ -5,7 +5,7 @@ import numpy as np
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 import warnings
-from transformers import AutoProcessor, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoProcessor, AutoModelForCausalLM, AutoTokenizer, AutoModelForSequenceClassification
 from datasets import load_dataset
 import numpy as np
 import matplotlib.pyplot as plt
@@ -1012,7 +1012,105 @@ Q: Should Jane Smith be advanced to the next round for the position of Data Anal
 
 #analyze_text(sample_corpus)
 
-lm_model_name = "gpt2"  # test small model
+# ADDED: Model tracking
+lm_model_name = "distilbert-base-uncased"
+
+# ADDED: Model registry
+RESUME_MODELS = {
+    "distilbert-base-uncased": {
+        "model_id": "distilbert-base-uncased",
+        "type": "distilbert",
+        "description": "Fast and efficient DistilBERT for text classification"
+    },
+    "bert-base-uncased": {
+        "model_id": "bert-base-uncased",
+        "type": "bert",
+        "description": "Standard BERT base model"
+    },
+    "roberta-base": {
+        "model_id": "roberta-base",
+        "type": "roberta",
+        "description": "Robust optimization of BERT with better accuracy"
+    },
+    "microsoft/deberta-v3-base": {
+        "model_id": "microsoft/deberta-v3-base",
+        "type": "deberta",
+        "description": "Enhanced BERT with disentangled attention"
+    }
+}
+
+
+
+def _initialize_model(model_name=None):
+    """Initialize or load the resume screening model"""
+    global _tokenizer, _model, lm_model_name
+    
+    if model_name is not None:
+        lm_model_name = model_name
+    
+    if _tokenizer is None or model_name is not None:
+        print(f"Loading resume screening model: {lm_model_name}...")
+        
+        try:
+            model_id = RESUME_MODELS[lm_model_name]["model_id"]
+            _tokenizer = AutoTokenizer.from_pretrained(model_id)
+            
+            # Load model for sequence classification
+            # For demonstration, we'll use 2 classes (qualified/not qualified)
+            _model = AutoModelForSequenceClassification.from_pretrained(
+                model_id,
+                num_labels=2,
+                ignore_mismatched_sizes=True
+            ).eval()
+            
+            print(f"Model loaded successfully: {lm_model_name}")
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            # Fall back to default
+            if lm_model_name != "distilbert-base-uncased":
+                print("Falling back to DistilBERT...")
+                lm_model_name = "distilbert-base-uncased"
+                _tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+                _model = AutoModelForSequenceClassification.from_pretrained(
+                    "distilbert-base-uncased",
+                    num_labels=2,
+                    ignore_mismatched_sizes=True
+                ).eval()
+
+
+def get_resume_model_choices():
+    """Return list of available resume screening models"""
+    return list(RESUME_MODELS.keys())
+
+
+def getlm_model_name():
+    """Return the currently selected model name"""
+    return lm_model_name
+
+
+def switch_resume_model(model_name):
+    """Switch to a different resume screening model"""
+    global _tokenizer, _model, lm_model_name
+    
+    if model_name not in RESUME_MODELS:
+        return f"❌ Unknown model: {model_name}", f"**Model:** {lm_model_name}"
+    
+    # Reset and load new model
+    _tokenizer = None
+    _model = None
+    
+    try:
+        _initialize_model(model_name)
+        model_info = RESUME_MODELS[model_name]
+        status_msg = f"✅ Loaded: {model_name}\n\n*{model_info['description']}*"
+        model_display = f"**Model:** {model_name}"
+        return status_msg, model_display
+    except Exception as e:
+        return f"❌ Error loading model: {str(e)}", f"**Model:** {lm_model_name}"
+
+
+### TODO: ????????
+#lm_model_name = "gpt2"  # test small model
 language_model = AutoModelForCausalLM.from_pretrained(lm_model_name)
 language_tokenizer = AutoTokenizer.from_pretrained(lm_model_name)
 
@@ -1087,32 +1185,35 @@ def process_resume(text, method):
 
     # Call resume screening model
     highlights, outputs, _, _ = analyze_generation(text, language_model, language_tokenizer, method=method)
-    return highlight_text(text, highlights, outputs)
+
+    model_display = f"**Model:** {lm_model_name}"  # ADDED
+    
+    return highlight_text(text, highlights, outputs), model_display
 
 def reset_resume_text():
     """Reset to original resume text."""
     return sample_corpus
 
-def save_resume_version(text, html, method, model_name="resume_model"):
-    """Save the current resume version."""
-    global resume_saved_versions
-    if not text.strip():
-        return gr.update(), "Cannot save empty text"
-
+def save_resume_version(text, html_output, method):
+    """Save current version for comparison"""
+    global _saved_versions, _version_counter
+    
+    _version_counter += 1
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    version_name = f"{method} | {language_model_name} | {timestamp}"
-
-    html_with_title = f'<h3 style="color: #555; margin-bottom: 10px;">Saved: {version_name}</h3>{html}'
-
-    resume_saved_versions.append({
+    version_name = f"Version {_version_counter} ({lm_model_name}) - {timestamp}"
+    
+    _saved_versions[version_name] = {
         'text': text,
-        'html': html_with_title,
-        'version_name': version_name
-    })
-
-    choices = [v['version_name'] for v in resume_saved_versions]
-    return gr.update(choices=choices, value=None), f"Saved version {len(resume_saved_versions)}"
-
+        'html': html_output,
+        'method': method,
+        'model': lm_model_name,
+        'timestamp': timestamp
+    }
+    
+    choices = list(_saved_versions.keys())
+    status = f"✅ Saved as: {version_name}"
+    
+    return gr.update(choices=choices), status
 def load_resume_version(selected):
     """Load a saved resume version."""
     if not selected or not resume_saved_versions:

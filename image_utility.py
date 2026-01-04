@@ -26,21 +26,93 @@ except ImportError:
 # -------------------------
 # GLOBAL MODEL SETUP
 # -------------------------
-model_id = "microsoft/git-large-coco"
+# MODIFIED: Replace single model_id with tracking variable
+# OLD: model_id = "microsoft/git-large-coco"
+# NEW:
+_current_model_name = "microsoft/git-large-coco"
+
+# ADDED: Model registry
+IMAGE_MODELS = {
+    "microsoft/git-large-coco": {
+        "model_id": "microsoft/git-large-coco",
+        "type": "git",
+        "description": "Microsoft's Generative Image-to-text Transformer"
+    },
+    "Salesforce/blip-image-captioning-base": {
+        "model_id": "Salesforce/blip-image-captioning-base",
+        "type": "blip",
+        "description": "Salesforce's BLIP base model"
+    },
+    "Salesforce/blip-image-captioning-large": {
+        "model_id": "Salesforce/blip-image-captioning-large",
+        "type": "blip",
+        "description": "Salesforce's BLIP large model"
+    },
+    "nlpconnect/vit-gpt2-image-captioning": {
+        "model_id": "nlpconnect/vit-gpt2-image-captioning",
+        "type": "vit-gpt2",
+        "description": "Vision Transformer + GPT-2 decoder"
+    }
+}
+
+
 processor = None
 vision_model = None
 sample_images = []
 test_img = None
 
-def initialize_model():
+def initialize_model(model_name=None):
     """Initialize the vision model and processor"""
-    global processor, vision_model
+    global processor, vision_model, _current_model_name
     
-    if processor is None:
-        print("Loading image captioning model...")
-        processor = AutoProcessor.from_pretrained(model_id)
-        vision_model = AutoModelForCausalLM.from_pretrained(model_id).eval()
-        print("Model loaded successfully")
+    if model_name is not None:
+        _current_model_name = model_name
+    
+    if processor is None or model_name is not None:
+        print(f"Loading image captioning model: {_current_model_name}...")
+        model_id = IMAGE_MODELS[_current_model_name]["model_id"]
+        
+        try:
+            processor = AutoProcessor.from_pretrained(model_id)
+            vision_model = AutoModelForCausalLM.from_pretrained(model_id).eval()
+            print(f"Model loaded successfully: {_current_model_name}")
+        except Exception as e:
+            print(f"Error loading model {model_id}: {e}")
+            # Fall back to default
+            if _current_model_name != "microsoft/git-large-coco":
+                print("Falling back to default model...")
+                _current_model_name = "microsoft/git-large-coco"
+                processor = AutoProcessor.from_pretrained("microsoft/git-large-coco")
+                vision_model = AutoModelForCausalLM.from_pretrained("microsoft/git-large-coco").eval()
+
+# ADDED: Model management functions
+def get_image_model_choices():
+    """Return list of available image captioning models"""
+    return list(IMAGE_MODELS.keys())
+
+def get_current_model_name():
+    """Return the currently selected model name"""
+    return _current_model_name
+
+def switch_image_model(model_name):
+    """Switch to a different image captioning model"""
+    global processor, vision_model, _current_model_name
+    
+    if model_name not in IMAGE_MODELS:
+        return f"❌ Unknown model: {model_name}", f"**Model:** {_current_model_name}"
+    
+    # Reset and load new model
+    processor = None
+    vision_model = None
+    
+    try:
+        initialize_model(model_name)
+        model_info = IMAGE_MODELS[model_name]
+        status_msg = f"✅ Loaded: {model_name}\n\n*{model_info['description']}*"
+        model_display = f"**Model:** {model_name}"
+        return status_msg, model_display
+    except Exception as e:
+        return f"❌ Error loading model: {str(e)}", f"**Model:** {_current_model_name}"
 
 def load_sample_images(num_images=5):
     """Load sample images from the dataset"""

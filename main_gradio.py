@@ -159,7 +159,7 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
                     interactive=True,
                     scale=3
                 )
-                image_model_status = gr.Markdown("", scale=1)
+                image_model_status = gr.Markdown("")
 
             with gr.Row():
                 with gr.Column(scale=1):
@@ -306,7 +306,7 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
                     interactive=True,
                     scale=3
                 )
-                credit_model_status = gr.Markdown("", scale=1)
+                credit_model_status = gr.Markdown("")
 
             with gr.Row():
                 # Left column - Input features

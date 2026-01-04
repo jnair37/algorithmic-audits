@@ -145,8 +145,11 @@ def load_sample_images(num_images=5):
 # Initialize and load first test image
 # -------------------------
 initialize_model()
-sample_images = load_sample_images(num_images=5)
-test_img = sample_images[0] if sample_images else None
+try:
+    sample_images = load_sample_images(num_images=5)
+    test_img = sample_images[0] if sample_images else None
+except Exception as e:
+    test_img = None
 
 # -------------------------
 # PREDICTION FUNCTIONS

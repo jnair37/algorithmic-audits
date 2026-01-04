@@ -1013,10 +1013,15 @@ Q: Should Jane Smith be advanced to the next round for the position of Data Anal
 #analyze_text(sample_corpus)
 
 # ADDED: Model tracking
-lm_model_name = "distilbert-base-uncased"
+lm_model_name = "gpt2"
 
 # ADDED: Model registry
 RESUME_MODELS = {
+    "gpt2": {
+        "model_id": "gpt2",
+        "type": "gpt",
+        "description": "default"
+    },
     "distilbert-base-uncased": {
         "model_id": "distilbert-base-uncased",
         "type": "distilbert",

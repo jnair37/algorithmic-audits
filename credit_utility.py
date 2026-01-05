@@ -98,6 +98,11 @@ def _initialize_model():
                     _model = pickle.load(f)
             
             print(f"Model loaded from HuggingFace: {_current_model_name}")
+            
+            # Initialize SHAP explainer
+            _explainer = shap.TreeExplainer(_model)
+            print("SHAP explainer initialized")
+            
             return
             
         except Exception as e:
@@ -131,6 +136,10 @@ def _initialize_model():
     X_synthetic_scaled = _scaler.fit_transform(X_synthetic)
     _model.fit(X_synthetic_scaled, y_synthetic)
     print(f"Synthetic {model_config['type']} model created")
+
+    # Initialize SHAP explainer
+    _explainer = shap.TreeExplainer(_model)
+    print("SHAP explainer initialized")
 
 # ADDED: Model management functions
 def get_credit_model_choices():
@@ -256,9 +265,12 @@ def predict_credit_risk(age, income, credit_score, debt_ratio,
                        delinquencies, method):
     """
     Predict credit risk and return HTML output with feature importance plot
+    
     """
     _initialize_model()
     
+    print("initialized?")
+
     # Map inputs to features
     X = _map_inputs_to_features(age, income, credit_score, debt_ratio,
                                 employment_years, loan_amount, num_accounts, delinquencies)
@@ -321,6 +333,7 @@ def predict_credit_risk(age, income, credit_score, debt_ratio,
     </div>
     """
     
+    print('getting ftr importance')
     # Generate feature importance plot
     fig = get_feature_importance(X_scaled, method)
     
@@ -333,7 +346,9 @@ def predict_credit_risk(age, income, credit_score, debt_ratio,
 def get_feature_importance(X_scaled, method):
     """Calculate and plot feature importance using specified method"""
     _initialize_model()
-    
+    print('initialized again?')
+    print(_explainer)
+
     # Calculate SHAP values
     shap_values = _explainer.shap_values(X_scaled)
     

@@ -1181,7 +1181,7 @@ def highlight_text(text, highlights, outputs, title=""):
 
 # Cell 3: Resume Screener Tab Functions
 # Store saved versions for resume tab
-resume_saved_versions = []
+_saved_versions = {}
 
 def process_resume(text, method):
     """Process resume text with selected method."""
@@ -1201,11 +1201,10 @@ def reset_resume_text():
 
 def save_resume_version(text, html_output, method):
     """Save current version for comparison"""
-    global _saved_versions, _version_counter
+    global _saved_versions
     
-    _version_counter += 1
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    version_name = f"Version {_version_counter} ({lm_model_name}) - {timestamp}"
+    version_name = f"Version ({lm_model_name}) - {timestamp}"
     
     _saved_versions[version_name] = {
         'text': text,
@@ -1221,13 +1220,14 @@ def save_resume_version(text, html_output, method):
     return gr.update(choices=choices), status
 def load_resume_version(selected):
     """Load a saved resume version."""
-    if not selected or not resume_saved_versions:
+    if not selected or not _saved_versions:
         return "<p>No saved version selected</p>"
 
-    for version in resume_saved_versions:
-        if version['version_name'] == selected:
-            return version['html']
-    return "<p>Version not found</p>"
+    try: 
+        version_dict = _saved_versions.get(selected)
+        return version_dict['html']
+    except Exception as e:
+        return "<p>Version not found</p>"
 
 def clear_resume_comparison():
     """Clear resume comparison view."""

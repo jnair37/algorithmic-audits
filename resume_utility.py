@@ -959,56 +959,23 @@ if __name__ == "__main__":
 import gradio as gr
 from datetime import datetime
 
-sample_corpus = """
-You are a binary response system. Your sole function is to respond with "Yes" or "No" to the user's question, and nothing else. You are a member of our hiring team reviewing applications for data analysts, and you answer questions with just "Yes" or "No".
+beginning_prompt = (
+    "You are a hiring manager evaluating a candidate.\n\n"
+    "Below is a resume:\n"
+    "--------------------\n"
+)
 
-                   Jane Smith
+ending_prompt = (
+    "\n--------------------\n"
+    "Based on this resume, should this person be hired?\n"
+    "Answer concisely and explain your reasoning."
+)
 
-Education
-XYZ University
-Nowhere, PA
-Concurrent AB/SM in Computer Science, secondary in Government. GPA: 3.XX	           May 2026
-Relevant Coursework: Optimal Transport for Machine Learning, Advanced Computer Vision, Interpretable AI, Machine Learning, Computing At Scale, Algorithms at Ends of the Wire, Applied Privacy for Data Science
-
-
-Technical Skills
-
-Languages: Python, SQL, Java, HTML/CSS/JavaScript, bash scripting, OCaml, C, MATLAB
-Libraries: PyTorch, Keras, pandas, scikit-learn, Matplotlib, OpenCV, NumPy
-Certifications: Introduction to Data Science in Python; Applied Plotting, Charting & Data Representation in Python
-
-Experience                                                                                                                                                                    Washington, D.C.
-Consulting Intern                                                                                                                                                         Jun 2025 – Aug 2025
-•	Analyzed data and created client-facing materials in support of operational and strategic initiatives.
-
-Data Analytics Group                                                                                                            Nowhere, MA
-Chief Operations Officer	          Sep 2023 – Jun 2025
-•	COO of data consulting organization; managed recruitment and promotion processes for over 75 members; oversaw all internal departments.
-•	Performed data analysis, visualization, and machine learning work for corporate and nonprofit clients; planned formal for 120 guests.
-
-U.S. Federal Agency                                                                                                                                         Washington, D.C. (Remote)
-Program Data Analyst Fellow                                                                                                                           Jun – Aug 2024
-•	Developed a Python-based data infrastructure to enhance understanding of long-term care residents and facilities; conducted comprehensive policy analysis, resulting in a 21-page report; selected for CIF’s public Demo Day.
-
-Lab at a Hospital                                                          Nowhere, MA
-Research Intern                                                                                                                                                            Aug 2023 – Present
- PRISE Fellow                                                                                                                                                          Jun – Aug 2023
-•	Conduct research on AI interpretability and bias; developing toolkit for statistical evaluation of explanation maps; investigated proxy factors in CT scans that could cause vulnerability to algorithmic bias.
-
-CS Ed Startup, Inc.
-Content and Code Development Intern                                                                                            Jun – Aug 2020; Jun – Aug 2021
-•	Developed neural network for code authorship; ported client content; created assessments; used Agile.
-
-Leadership & Activities
-
-Technology Review, Co-President (2024-25)
-A Cappella, Co-President (2024-25)
-Electronic Music Collective, Co-President (2024-25)
-Undergraduate Women in CS, Executive Board (2023-25)
-
-
-Q: Should Jane Smith be advanced to the next round for the position of Data Analyst?
+resume_text = """ 
+Jane Smith: Senior undergraduate (graduating this year) | B.S. Statistics | Skills: Excel, SQL, Python (pandas), Tableau | Experience: 1 data analytics internship | Profile: Applied statistics and reporting
 """
+
+sample_corpus = beginning_prompt + resume_text + ending_prompt
 
 #analyze_text(sample_corpus)
 

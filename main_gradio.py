@@ -41,9 +41,9 @@ from credit_utility import (
 
 
 # Cell 5: Create the Gradio Interface
-with gr.Blocks(title="AI Auditor Tool") as demo:
-    gr.Markdown("# AI Auditor Tool")
-    gr.Markdown("Analyze and audit different AI models with interpretable explanations.")
+with gr.Blocks(title="Test Auditing Interface") as demo:
+    gr.Markdown("# Prototype Auditing Interface")
+    gr.Markdown("The following interface is meant to be used for gray-box auditing with access to an explanation. Each tab represents a different type of functionality (resume screening, image captioning, and credit risk) for which you can try out multiple models and interpretability methods.")
 
     with gr.Tabs():
         # Tab 1: Resume Screener
@@ -63,7 +63,7 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
             with gr.Row():
                 # Left column - Text editor
                 with gr.Column(scale=1):
-                    gr.Markdown("### Text Editor")
+                    gr.Markdown("### Modify Input Resume")
                     resume_text_input = gr.Textbox(
                         value=sample_corpus,
                         lines=15,
@@ -73,15 +73,12 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
                     resume_method_dropdown = gr.Dropdown(
                         choices=["integrated_gradients", "layer_integrated_gradients", "shap"],
                         value="integrated_gradients",
-                        label="Explanation Method (note: SHAP is doable but slow!)",
+                        label="Explanation Method",
                         interactive=True
                     )
                     with gr.Row():
                         resume_analyze_btn = gr.Button("Analyze", variant="primary")
                         resume_reset_btn = gr.Button("Revert to Original", variant="secondary")
-                    with gr.Row():
-                        resume_save_btn = gr.Button("Save Current Version", variant="primary")
-                    resume_save_status = gr.Markdown("")
 
                 # Middle column - Current analysis
                 with gr.Column(scale=1):
@@ -92,6 +89,9 @@ with gr.Blocks(title="AI Auditor Tool") as demo:
                         label="Current Highlights",
                         value="<p>Click 'Analyze' to see results...</p>"
                     )
+                    with gr.Row():
+                        resume_save_btn = gr.Button("Save Current Version", variant="primary")
+                    resume_save_status = gr.Markdown("")
 
                 # Right column - Saved version
                 with gr.Column(scale=1):

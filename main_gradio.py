@@ -78,7 +78,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         choices=["integrated_gradients", "layer_integrated_gradients", "shap"],
                         value="integrated_gradients",
                         label="Explanation Method",
-                        interactive=True
+                        interactive=False
                     )
                     with gr.Row():
                         resume_analyze_btn = gr.Button("Analyze", variant="primary")
@@ -93,7 +93,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         label="Model Output",
                         value="<p>Click 'Analyze' to see results...</p>"
                     )
-                    resume_explain_btn = gr.Button("Explain", variant='primary')
+                    resume_explain_btn = gr.Button("Explain", variant='primary', interactive=False)
                     explanation_html = gr.HTML(
                         label="Explanation",
                         value="<p>No explanation generated. Click 'Explain' to see results...</p>"
@@ -161,7 +161,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
             )
 
         # Tab 2: Image Captioner
-        with gr.Tab("Image Captioner"):
+        with gr.Tab("Image Captioner", interactive=False):
             gr.Markdown("# Image Captioner with Interpretability")
             gr.Markdown("Analyze image captioning models with multiple explanation methods and image sources.")
 
@@ -308,7 +308,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
             """)
 
         # Tab 3: Credit Risk Analyzer
-        with gr.Tab("Credit Risk Analyzer"):
+        with gr.Tab("Credit Risk Analyzer", interactive=False):
             gr.Markdown("### Credit Risk Model Auditor")
             gr.Markdown("Analyze credit risk predictions and understand which factors influence the model's decisions.")
             

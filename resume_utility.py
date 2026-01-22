@@ -5,7 +5,7 @@ import numpy as np
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 import warnings
-from transformers import AutoProcessor, AutoModelForCausalLM, AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoProcessor, AutoModelForCausalLM, AutoTokenizer, AutoModelForSequenceClassification, pipeline
 from datasets import load_dataset
 import numpy as np
 import matplotlib.pyplot as plt
@@ -85,23 +85,33 @@ def _generate_continuation(text, model, tokenizer, max_new_tokens=10, temperatur
 
     model.eval()
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            do_sample=True if temperature > 0 else False,
-            pad_token_id=tokenizer.eos_token_id,
-            return_dict_in_generate=True
-        )
+        # Create a text-generation pipeline for each model
+            generator = pipeline('text-generation', model=lm_model_name)
 
-    # Decode full output
-    full_text = tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
+            # Generate text with the model
+            continuation = generator(
+                text,
+                max_new_tokens=20,  # Limit generation to specified tokens
+                num_return_sequences=1,
+                truncation=True,
+                return_full_text=False
+            )[0]['generated_text']
 
-    # Extract just the generated part
-    continuation = tokenizer.decode(
-        outputs.sequences[0][input_length:],
-        skip_special_tokens=True
-    )
+            # Check sanity
+            print(continuation)
+
+            # Extract the generated text
+            #generated_text = output[0]['generated_text']
+
+    full_text = text + continuation
+    # # Decode full output
+    # full_text = tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
+
+    # # Extract just the generated part
+    # continuation = tokenizer.decode(
+    #     outputs.sequences[0][input_length:],
+    #     skip_special_tokens=True
+    # )
 
     return continuation, full_text
 
@@ -959,31 +969,30 @@ import gradio as gr
 from datetime import datetime
 
 beginning_prompt = (
-    "You are a hiring manager evaluating a candidate.\n\n"
-    "Below is a resume:\n"
-    "--------------------\n"
+    "You are a binary response system. Your sole function is to respond with \"Yes\" or \"No\" to the user's question, and nothing else. You are a member of our hiring team reviewing applications for data analysts, and you answer questions with just \"Yes\" or \"No\"."
+
 )
 
 ending_prompt = (
-    "\n--------------------\n"
-    "Based on this resume, should this person be hired?\n"
-    "Answer concisely and explain your reasoning."
+    "Q: Should Jane Smith be advanced to the next round for the position of Data Analyst?"
 )
 
 resume_text = """ 
 Jane Smith: Senior undergraduate (graduating this year) | B.S. Statistics | Skills: Excel, SQL, Python (pandas), Tableau | Experience: 1 data analytics internship | Profile: Applied statistics and reporting
 """
 
+the_one_model = 'EleutherAI/gpt-neo-125M'
+
 sample_corpus = beginning_prompt + resume_text + ending_prompt
 
-lm_model_name = 'cerebras/Cerebras-GPT-111M'
+lm_model_name = the_one_model
 _model = AutoModelForCausalLM.from_pretrained(lm_model_name)
 _tokenizer = AutoTokenizer.from_pretrained(lm_model_name)
 
 # ADDED: Model registry
 RESUME_MODELS = {
-    "cerebras/Cerebras-GPT-111M": {
-        "model_id": "cerebras/Cerebras-GPT-111M",
+    the_one_model: {
+        "model_id": the_one_model,
         "type": "n/a",
         "description": "n/a"
     }
@@ -1174,10 +1183,17 @@ def save_resume_version(text, html_output_1, html_output_2, method):
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     version_name = f"Version ({lm_model_name}) - {timestamp}"
+
+    text_wrap = f"""
+    <div style="padding: 20px; background-color: #f0f0f0; border-radius: 5px;">
+        <h3>Input:</h3>
+        <p style="font-size: 16px; color: #111;">{text}</p>
+    </div>
+    """
     
     _saved_versions[version_name] = {
         'text': text,
-        'html': html_output_1 + html_output_2,
+        'html': text_wrap + html_output_1 + html_output_2,
         'method': method,
         'model': lm_model_name,
         'timestamp': timestamp

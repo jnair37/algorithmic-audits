@@ -455,9 +455,9 @@ def explain_generation(
     text: str,
     model,
     tokenizer,
+    continuation,
+    full_text,
     method: str = "integrated_gradients",
-    max_new_tokens: int = 10,
-    temperature: float = 1.0,
     **kwargs
 ) -> Tuple[UnifiedExplanation, str, str, int]:
     """
@@ -488,12 +488,7 @@ def explain_generation(
     print("STEP 1: GENERATING CONTINUATION...")
     print(f"{'='*70}")
 
-    # Step 1: Generate continuation
-    continuation, full_text = _generate_continuation(
-        text, model, tokenizer,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature
-    )
+    
 
     print(f"Input: '{text}'")
     print(f"Generated: '{continuation}'")
@@ -564,13 +559,14 @@ def explain_generation(
     return explanation, continuation, clean_target, extended_input
 
 
+
 def analyze_generation(
     text: str,
     model,
     tokenizer,
+    continuation,
+    full_text,
     method: str = "integrated_gradients",
-    max_new_tokens: int = 10,
-    temperature: float = 1.0,
     **kwargs
 ):
     """
@@ -593,8 +589,11 @@ def analyze_generation(
 
     """
     # Step 1: Generate and explain
+
+    ## Ideally, pass this back to the interface before generating any explanation at all!
+
     explanation, continuation, target_token, extended_input = explain_generation(
-        text, model, tokenizer, method, max_new_tokens, temperature, **kwargs
+        text, model, tokenizer, continuation, full_text, method, **kwargs
     )
 
     # Step 2: Convert to highlights for visualization
@@ -756,204 +755,204 @@ def get_explanation(
     return explanation
 
 
-# ============================================================================
-# Modified analyze_text Function (Drop-in Replacement)
-# ============================================================================
+# # ============================================================================
+# # Modified analyze_text Function (Drop-in Replacement)
+# # ============================================================================
 
-def analyze_text_unified(text, model, tokenizer, method="integrated_gradients",
-                        position=-1, **kwargs):
-    """
-    Drop-in replacement for analyze_text() for causal LMs.
+# def analyze_text_unified(text, model, tokenizer, method="integrated_gradients",
+#                         position=-1, **kwargs):
+#     """
+#     Drop-in replacement for analyze_text() for causal LMs.
 
-    Explains: How does each input token contribute to next-token prediction?
+#     Explains: How does each input token contribute to next-token prediction?
 
-    Args:
-        text: Input text to analyze
-        model: AutoModelForCausalLM
-        tokenizer: Corresponding tokenizer
-        method: Interpretability method
-        position: Position to predict next token for (-1 = last position)
-        **kwargs: Additional arguments for the method
+#     Args:
+#         text: Input text to analyze
+#         model: AutoModelForCausalLM
+#         tokenizer: Corresponding tokenizer
+#         method: Interpretability method
+#         position: Position to predict next token for (-1 = last position)
+#         **kwargs: Additional arguments for the method
 
-    Returns:
-        highlights: List of (start, end, label, color) tuples
-        outputs: Top predicted next tokens
-    """
-    import matplotlib.pyplot as plt
-    from matplotlib import colors as mcolors
+#     Returns:
+#         highlights: List of (start, end, label, color) tuples
+#         outputs: Top predicted next tokens
+#     """
+#     import matplotlib.pyplot as plt
+#     from matplotlib import colors as mcolors
 
-    # Get explanation in unified format
-    explanation = get_explanation(text, model, tokenizer, method=method,
-                                 position=position, **kwargs)
+#     # Get explanation in unified format
+#     explanation = get_explanation(text, model, tokenizer, method=method,
+#                                  position=position, **kwargs)
 
-    # Extract values (same as original code)
-    all_values = explanation.values
-    base_values = explanation.base_values
-    data_values = explanation.data
-    outputs = explanation.output_names
+#     # Extract values (same as original code)
+#     all_values = explanation.values
+#     base_values = explanation.base_values
+#     data_values = explanation.data
+#     outputs = explanation.output_names
 
-    # Pick the predicted token's attributions
-    # Find which token has non-zero attributions
-    token_with_values = None
-    for i in range(all_values.shape[2]):
-        if np.any(all_values[0, :, i] != 0):
-            token_with_values = i
-            break
+#     # Pick the predicted token's attributions
+#     # Find which token has non-zero attributions
+#     token_with_values = None
+#     for i in range(all_values.shape[2]):
+#         if np.any(all_values[0, :, i] != 0):
+#             token_with_values = i
+#             break
 
-    if token_with_values is None:
-        # Fallback: use last token
-        all_values = all_values[0, :, -1]
-    else:
-        all_values = all_values[0, :, token_with_values]
+#     if token_with_values is None:
+#         # Fallback: use last token
+#         all_values = all_values[0, :, -1]
+#     else:
+#         all_values = all_values[0, :, token_with_values]
 
-    # Normalize values
-    min_val = np.min(all_values)
-    max_val = np.max(all_values)
+#     # Normalize values
+#     min_val = np.min(all_values)
+#     max_val = np.max(all_values)
 
-    if max_val - min_val == 0:
-        normalized = np.ones_like(all_values) * 0.5
-    else:
-        normalized = (all_values - min_val) / (max_val - min_val)
+#     if max_val - min_val == 0:
+#         normalized = np.ones_like(all_values) * 0.5
+#     else:
+#         normalized = (all_values - min_val) / (max_val - min_val)
 
-    # Choose colormap
-    cmap = plt.cm.seismic
+#     # Choose colormap
+#     cmap = plt.cm.seismic
 
-    # Generate highlights
-    current_pos = 0
-    highlights = []
+#     # Generate highlights
+#     current_pos = 0
+#     highlights = []
 
-    for i in range(len(data_values[0])):
-        word = data_values[0][i]
-        value = all_values[i]
-        color = mcolors.to_hex(cmap(normalized[i]))
+#     for i in range(len(data_values[0])):
+#         word = data_values[0][i]
+#         value = all_values[i]
+#         color = mcolors.to_hex(cmap(normalized[i]))
 
-        start = text.find(word, current_pos)
-        if start != -1:
-            end = start + len(word)
-            label = f"{value:.2f}"
-            highlights.append((start, end, label, color))
-            current_pos = end
+#         start = text.find(word, current_pos)
+#         if start != -1:
+#             end = start + len(word)
+#             label = f"{value:.2f}"
+#             highlights.append((start, end, label, color))
+#             current_pos = end
 
-    return highlights, outputs
-
-
-# ============================================================================
-# Convenience Functions
-# ============================================================================
-
-def show_next_token_prediction(text, model, tokenizer, top_k=10, show_continuation=True,
-                               max_new_tokens=10):
-    """
-    Show what the model predicts as the next token(s).
-    Useful for understanding what we're explaining.
-
-    Args:
-        show_continuation: If True, also generate a full continuation
-        max_new_tokens: Number of tokens to generate in continuation
-    """
-    inputs = tokenizer(text, return_tensors="pt")
-
-    model.eval()
-    with torch.no_grad():
-        outputs = model(**inputs)
-        next_token_logits = outputs.logits[0, -1, :]
-
-    top_tokens, top_probs, top_indices = _get_top_k_tokens(next_token_logits, tokenizer, k=top_k)
-
-    print(f"\nInput text: '{text}'")
-    print(f"\nTop {top_k} predicted next tokens:")
-    print("-" * 50)
-    for i, (token, prob, idx) in enumerate(zip(top_tokens, top_probs, top_indices), 1):
-        clean_token = token.replace('Ġ', ' ').replace('Â', '').strip()
-        if not clean_token:
-            clean_token = token
-        print(f"{i}. '{clean_token}' (prob: {prob:.4f})")
-
-    if show_continuation:
-        print("\n" + "=" * 50)
-        continuation, full_text = _generate_continuation(text, model, tokenizer, max_new_tokens)
-        print(f"Generated continuation ({max_new_tokens} tokens):")
-        print(f"'{continuation}'")
-        print("\nFull text:")
-        print(f"'{full_text}'")
-
-    print()
-
-# Benchmarking function just in case
-def benchmark_methods(text, model, tokenizer, methods=None, num_runs=3):
-
-    import time
-
-    if methods is None:
-        methods = ["integrated_gradients", "attention", "gradient_x_input",
-                  "layer_integrated_gradients"]
-
-    results = {}
-
-    print(f"\nBenchmarking on text of length: {len(text)} characters")
-    print("="*70)
-
-    # First show what we're predicting
-    show_next_token_prediction(text, model, tokenizer, top_k=5)
-
-    for method in methods:
-        print(f"\nTesting {method}...")
-        times = []
-
-        for run in range(num_runs):
-            start = time.perf_counter()
-            _ = get_explanation(text, model, tokenizer, method=method)
-            elapsed = time.perf_counter() - start
-            times.append(elapsed)
-            print(f"  Run {run+1}: {elapsed:.4f}s")
-
-        avg_time = np.mean(times)
-        results[method] = avg_time
-        print(f"  Average: {avg_time:.4f}s")
-
-    print("\n" + "="*70)
-    print("RANKING (fastest to slowest):")
-    print("-"*70)
-
-    for i, (method, time_val) in enumerate(sorted(results.items(), key=lambda x: x[1]), 1):
-        print(f"{i}. {method:<30} {time_val:.4f}s")
-
-    return results
+#     return highlights, outputs
 
 
-# ============================================================================
-# Example Usage
-# ============================================================================
+# # ============================================================================
+# # Convenience Functions
+# # ============================================================================
 
-if __name__ == "__main__":
+# def show_next_token_prediction(text, model, tokenizer, top_k=10, show_continuation=True,
+#                                max_new_tokens=10):
+#     """
+#     Show what the model predicts as the next token(s).
+#     Useful for understanding what we're explaining.
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+#     Args:
+#         show_continuation: If True, also generate a full continuation
+#         max_new_tokens: Number of tokens to generate in continuation
+#     """
+#     inputs = tokenizer(text, return_tensors="pt")
 
-    model_name = "gpt2"  # test small model
-    # On cluster can run model_name = "microsoft/phi-2" or similar
-    model = AutoModelForCausalLM.from_pretrained(model_name)
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+#     model.eval()
+#     with torch.no_grad():
+#         outputs = model(**inputs)
+#         next_token_logits = outputs.logits[0, -1, :]
 
-    text = "The cat sat on the"
+#     top_tokens, top_probs, top_indices = _get_top_k_tokens(next_token_logits, tokenizer, k=top_k)
 
-    # See what's being predicted
-    show_next_token_prediction(text, model, tokenizer)
+#     print(f"\nInput text: '{text}'")
+#     print(f"\nTop {top_k} predicted next tokens:")
+#     print("-" * 50)
+#     for i, (token, prob, idx) in enumerate(zip(top_tokens, top_probs, top_indices), 1):
+#         clean_token = token.replace('Ġ', ' ').replace('Â', '').strip()
+#         if not clean_token:
+#             clean_token = token
+#         print(f"{i}. '{clean_token}' (prob: {prob:.4f})")
 
-    # Get explanation using Integrated Gradients
-    explanation = get_explanation(
-        text,
-        model,
-        tokenizer,
-        method="integrated_gradients"
-    )
+#     if show_continuation:
+#         print("\n" + "=" * 50)
+#         continuation, full_text = _generate_continuation(text, model, tokenizer, max_new_tokens)
+#         print(f"Generated continuation ({max_new_tokens} tokens):")
+#         print(f"'{continuation}'")
+#         print("\nFull text:")
+#         print(f"'{full_text}'")
 
-    # Or use the unified interface
-    highlights, outputs = analyze_text_unified(
-        text,
-        model,
-        tokenizer,
-        method="integrated_gradients"
-    )
+#     print()
+
+# # Benchmarking function just in case
+# def benchmark_methods(text, model, tokenizer, methods=None, num_runs=3):
+
+#     import time
+
+#     if methods is None:
+#         methods = ["integrated_gradients", "attention", "gradient_x_input",
+#                   "layer_integrated_gradients"]
+
+#     results = {}
+
+#     print(f"\nBenchmarking on text of length: {len(text)} characters")
+#     print("="*70)
+
+#     # First show what we're predicting
+#     show_next_token_prediction(text, model, tokenizer, top_k=5)
+
+#     for method in methods:
+#         print(f"\nTesting {method}...")
+#         times = []
+
+#         for run in range(num_runs):
+#             start = time.perf_counter()
+#             _ = get_explanation(text, model, tokenizer, method=method)
+#             elapsed = time.perf_counter() - start
+#             times.append(elapsed)
+#             print(f"  Run {run+1}: {elapsed:.4f}s")
+
+#         avg_time = np.mean(times)
+#         results[method] = avg_time
+#         print(f"  Average: {avg_time:.4f}s")
+
+#     print("\n" + "="*70)
+#     print("RANKING (fastest to slowest):")
+#     print("-"*70)
+
+#     for i, (method, time_val) in enumerate(sorted(results.items(), key=lambda x: x[1]), 1):
+#         print(f"{i}. {method:<30} {time_val:.4f}s")
+
+#     return results
+
+
+# # ============================================================================
+# # Example Usage
+# # ============================================================================
+
+# if __name__ == "__main__":
+
+#     from transformers import AutoModelForCausalLM, AutoTokenizer
+
+#     model_name = "gpt2"  # test small model
+#     # On cluster can run model_name = "microsoft/phi-2" or similar
+#     model = AutoModelForCausalLM.from_pretrained(model_name)
+#     tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+#     text = "The cat sat on the"
+
+#     # See what's being predicted
+#     show_next_token_prediction(text, model, tokenizer)
+
+#     # Get explanation using Integrated Gradients
+#     explanation = get_explanation(
+#         text,
+#         model,
+#         tokenizer,
+#         method="integrated_gradients"
+#     )
+
+#     # Or use the unified interface
+#     highlights, outputs = analyze_text_unified(
+#         text,
+#         model,
+#         tokenizer,
+#         method="integrated_gradients"
+#     )
 
 # Cell 1: Imports
 import gradio as gr
@@ -977,40 +976,18 @@ Jane Smith: Senior undergraduate (graduating this year) | B.S. Statistics | Skil
 
 sample_corpus = beginning_prompt + resume_text + ending_prompt
 
-#analyze_text(sample_corpus)
-
-# ADDED: Model tracking
-lm_model_name = "gpt2"
+lm_model_name = 'cerebras/Cerebras-GPT-111M'
+_model = AutoModelForCausalLM.from_pretrained(lm_model_name)
+_tokenizer = AutoTokenizer.from_pretrained(lm_model_name)
 
 # ADDED: Model registry
 RESUME_MODELS = {
-    "gpt2": {
-        "model_id": "gpt2",
-        "type": "gpt",
-        "description": "default"
-    },
-    "distilbert-base-uncased": {
-        "model_id": "distilbert-base-uncased",
-        "type": "distilbert",
-        "description": "Fast and efficient DistilBERT for text classification"
-    },
-    "bert-base-uncased": {
-        "model_id": "bert-base-uncased",
-        "type": "bert",
-        "description": "Standard BERT base model"
-    },
-    "roberta-base": {
-        "model_id": "roberta-base",
-        "type": "roberta",
-        "description": "Robust optimization of BERT with better accuracy"
-    },
-    "microsoft/deberta-v3-base": {
-        "model_id": "microsoft/deberta-v3-base",
-        "type": "deberta",
-        "description": "Enhanced BERT with disentangled attention"
+    "cerebras/Cerebras-GPT-111M": {
+        "model_id": "cerebras/Cerebras-GPT-111M",
+        "type": "n/a",
+        "description": "n/a"
     }
 }
-
 
 
 def _initialize_model(model_name=None):
@@ -1083,8 +1060,8 @@ def switch_resume_model(model_name):
 
 ### TODO: ????????
 #lm_model_name = "gpt2"  # test small model
-language_model = AutoModelForCausalLM.from_pretrained(lm_model_name)
-language_tokenizer = AutoTokenizer.from_pretrained(lm_model_name)
+# language_model = AutoModelForCausalLM.from_pretrained(lm_model_name)
+# language_tokenizer = AutoTokenizer.from_pretrained(lm_model_name)
 
 # Cell 2: Shared utility function
 def highlight_text(text, highlights, outputs, title=""):
@@ -1151,22 +1128,47 @@ def highlight_text(text, highlights, outputs, title=""):
 _saved_versions = {}
 
 def process_resume(text, method):
+
     """Process resume text with selected method."""
     if not text.strip():
         return "<p>Enter some text to analyze...</p>"
 
     # Call resume screening model
-    highlights, outputs, _, _ = analyze_generation(text, language_model, language_tokenizer, method=method)
-
-    model_display = f"**Model:** {lm_model_name}"  # ADDED
     
-    return highlight_text(text, highlights, outputs), model_display
+    # now: GENERATE FIRST and return before explaining
+    continuation, full_text = _generate_continuation(
+        text, _model, _tokenizer,
+        max_new_tokens=10,
+        temperature=0.1
+    )
+
+    # Wrap in HTML for direct display
+    html_output = f"""
+    <div style="padding: 20px; background-color: #f0f0f0; border-radius: 5px;">
+        <h3>Your Text:</h3>
+        <p style="font-size: 16px; color: #111;">{continuation}</p>
+    </div>
+    """
+        
+    model_display = f"**Model:** {lm_model_name}"  # ADDED
+
+    # Display the model and the output only in the first box for now...
+    return html_output, continuation, full_text, model_display
+
+
+# TODO: in the interp version, have the user select a target token from the above output, which triggers explain_resume
+def explain_resume(text, continuation, full_text, method):
+
+    highlights, outputs, _, _ = analyze_generation(text, _model, _tokenizer, continuation, full_text, method=method)
+
+    return highlight_text(text, highlights, outputs)
+
 
 def reset_resume_text():
     """Reset to original resume text."""
     return sample_corpus
 
-def save_resume_version(text, html_output, method):
+def save_resume_version(text, html_output_1, html_output_2, method):
     """Save current version for comparison"""
     global _saved_versions
     
@@ -1175,7 +1177,7 @@ def save_resume_version(text, html_output, method):
     
     _saved_versions[version_name] = {
         'text': text,
-        'html': html_output,
+        'html': html_output_1 + html_output_2,
         'method': method,
         'model': lm_model_name,
         'timestamp': timestamp

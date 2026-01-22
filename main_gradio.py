@@ -10,6 +10,7 @@ import io
 from resume_utility import (
     sample_corpus, 
     process_resume,
+    explain_resume,
     reset_resume_text, 
     save_resume_version, 
     load_resume_version, 
@@ -46,8 +47,11 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
     gr.Markdown("The following interface is meant to be used for gray-box auditing with access to an explanation. Each tab represents a different type of functionality (resume screening, image captioning, and credit risk) for which you can try out multiple models and interpretability methods.")
 
     with gr.Tabs():
+
         # Tab 1: Resume Screener
         with gr.Tab("Resume Screener"):
+            continuation_state = gr.State()
+            fulltext_state = gr.State()
             gr.Markdown("### Resume Screener")
             # ADDED: Model selection dropdown
             with gr.Row():
@@ -85,9 +89,14 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                     gr.Markdown("### Current Analysis")
                     # ADDED: Show current model being used
                     resume_current_model_display = gr.Markdown("**Model:** Loading...")
-                    resume_html_output = gr.HTML(
-                        label="Current Highlights",
+                    pure_html_output = gr.HTML(
+                        label="Model Output",
                         value="<p>Click 'Analyze' to see results...</p>"
+                    )
+                    resume_explain_btn = gr.Button("Explain", variant='primary')
+                    explanation_html = gr.HTML(
+                        label="Explanation",
+                        value="<p>No explanation generated. Click 'Explain' to see results...</p>"
                     )
                     with gr.Row():
                         resume_save_btn = gr.Button("Save Current Version", variant="primary")
@@ -111,7 +120,13 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
             resume_analyze_btn.click(
                 fn=process_resume,
                 inputs=[resume_text_input, resume_method_dropdown],
-                outputs=[resume_html_output, resume_current_model_display]  # ADDED 2nd output
+                outputs=[pure_html_output, continuation_state, fulltext_state, resume_current_model_display] 
+            )
+
+            resume_explain_btn.click(
+                fn=explain_resume,
+                inputs=[resume_text_input, continuation_state, fulltext_state, resume_method_dropdown],
+                outputs=[explanation_html]
             )
 
             resume_reset_btn.click(
@@ -122,7 +137,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
 
             resume_save_btn.click(
                 fn=save_resume_version,
-                inputs=[resume_text_input, resume_html_output, resume_method_dropdown],
+                inputs=[resume_text_input, pure_html_output, explanation_html, resume_method_dropdown],
                 outputs=[resume_version_dropdown, resume_save_status]
             )
 

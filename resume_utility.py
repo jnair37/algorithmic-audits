@@ -120,6 +120,109 @@ def _generate_continuation(text, model, tokenizer, max_new_tokens=10, temperatur
 # Method Implementations for Causal LM
 # ============================================================================
 
+#### UPDATE: NOISE TUNNEL FOR OPTIMAL INTERP
+
+def _get_integrated_gradients_with_noise_tunnel(text, model, tokenizer, target_token_id=None,
+                                     n_steps=50, position=-1, nt_samples=10, nt_type='smoothgrad'):
+    """
+    Compute Integrated Gradients with NoiseTunnel for causal LM.
+    Args:
+        text: Input text (includes partial generation)
+        target_token_id: Target token to explain (if None, uses predicted token)
+        n_steps: Number of integration steps
+        position: Position to predict next token for (-1 = last position)
+        nt_samples: Number of samples for NoiseTunnel
+        nt_type: Type of noise tunnel ('smoothgrad', 'smoothgrad_sq', 'vargrad')
+    """
+    from captum.attr import IntegratedGradients, NoiseTunnel
+    import torch
+    import numpy as np
+    
+    print("tokenizing input")
+    # Tokenize input
+    inputs = tokenizer(text, return_tensors="pt")
+    input_ids = inputs['input_ids'].to(model.device)
+    
+    print('getting embed layer')
+    # Get the embedding layer (compatible with different architectures)
+    embedding_layer = None
+    if hasattr(model, 'get_input_embeddings'):
+        embedding_layer = model.get_input_embeddings()
+    elif hasattr(model, 'transformer') and hasattr(model.transformer, 'wte'):
+        embedding_layer = model.transformer.wte  # GPT-2 style
+    elif hasattr(model, 'model') and hasattr(model.model, 'embed_tokens'):
+        embedding_layer = model.model.embed_tokens  # LLaMA style
+    elif hasattr(model, 'bert') and hasattr(model.bert, 'embeddings'):
+        embedding_layer = model.bert.embeddings.word_embeddings  # BERT style
+    else:
+        raise ValueError("Could not find embedding layer in model")
+    
+    print("detaching")
+    # Get embeddings
+    input_embeds = embedding_layer(input_ids).detach().clone()
+    input_embeds.requires_grad = True
+    
+    print('get next token')
+    # Define forward function for Captum
+    def forward_func(embeds):
+        # Create attention mask if needed
+        attention_mask = torch.ones(embeds.shape[0], embeds.shape[1], 
+                                   dtype=torch.long, device=embeds.device)
+        
+        # Forward pass with embeddings
+        outputs = model(inputs_embeds=embeds, attention_mask=attention_mask)
+        logits = outputs.logits
+        
+        # Get logits for the target position
+        target_logits = logits[:, position, :]
+        
+        return target_logits
+    
+    # Get next token logits for return
+    with torch.no_grad():
+        next_token_logits = forward_func(input_embeds)
+    
+    # If no target token specified, use the predicted token
+    if target_token_id is None:
+        target_token_id = next_token_logits.argmax(dim=-1).item()
+    
+    # Create baseline (zero embeddings)
+    baseline = torch.zeros_like(input_embeds)
+    
+    # Initialize Integrated Gradients
+    ig = IntegratedGradients(forward_func)
+    
+    # Wrap with NoiseTunnel
+    nt = NoiseTunnel(ig)
+    
+    # Compute attributions
+    attributions = nt.attribute(
+        input_embeds,
+        baselines=baseline,
+        target=target_token_id,
+        n_steps=n_steps,
+        nt_samples=nt_samples,
+        nt_type=nt_type,
+        internal_batch_size=1
+    )
+    
+    # Sum attributions across embedding dimension to get per-token scores
+    token_attributions = attributions.sum(dim=-1).squeeze(0)
+    
+    # Convert to numpy
+    attr_scores = token_attributions.detach().cpu().numpy()
+    
+    # Get tokens for interpretation
+    tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
+    
+    # Base values (baseline embeddings summed, should be zeros)
+    base_values = np.zeros_like(attr_scores)
+    
+    # Output names (the predicted/target token)
+    output_names = [tokenizer.decode([target_token_id])]
+    
+    return attr_scores, tokens, base_values, output_names, next_token_logits.cpu().numpy()
+
 def _get_integrated_gradients_causal(text, model, tokenizer, target_token_id=None,
                                      n_steps=50, position=-1):
     """
@@ -705,7 +808,7 @@ def get_explanation(
     # Route to appropriate method
     if method == "integrated_gradients" or method == "ig":
         n_steps = kwargs.get('n_steps', 50)
-        attr_scores, tokens, base_values, output_names, logits = _get_integrated_gradients_causal(
+        attr_scores, tokens, base_values, output_names, logits = _get_integrated_gradients_with_noise_tunnel(
             text, model, tokenizer, target_token_id, n_steps, position
         )
 
@@ -1110,12 +1213,12 @@ def highlight_text(text, highlights, outputs, title=""):
             if label not in unique_labels:
                 unique_labels[label] = color
 
-        legend = f"""
-        <div style="margin-top: 20px; padding: 10px; background-color: #f5f5f5; border-radius: 5px;">
-            <strong>Legend:</strong><br>
-            {' '.join([f'<mark style="background-color:#000000; color:#ffffff; padding: 2px 8px; margin: 5px; border-radius: 3px;">{output}</mark>' for output in outputs])}
-        </div>
-        """
+        # legend = f"""
+        # <div style="margin-top: 20px; padding: 10px; background-color: #f5f5f5; border-radius: 5px;">
+        #     <strong>Legend:</strong><br>
+        #     {' '.join([f'<mark style="background-color:#000000; color:#ffffff; padding: 2px 8px; margin: 5px; border-radius: 3px;">{output}</mark>' for output in outputs])}
+        # </div>
+        # """
 
     # Add title if provided
     title_html = f'<h3 style="color: #555; margin-bottom: 10px;">{title}</h3>' if title else ''
@@ -1126,7 +1229,6 @@ def highlight_text(text, highlights, outputs, title=""):
     <div style="font-family: Arial, sans-serif; line-height: 1.8; padding: 20px; border: 1px solid #ddd; border-radius: 5px; background-color: white;">
         {content}
     </div>
-    {legend if highlights else ''}
     """
 
     return html_content
@@ -1136,7 +1238,7 @@ def highlight_text(text, highlights, outputs, title=""):
 # Store saved versions for resume tab
 _saved_versions = {}
 
-def process_resume(text, method):
+def process_resume(text, method, temperature):
 
     """Process resume text with selected method."""
     if not text.strip():
@@ -1148,7 +1250,7 @@ def process_resume(text, method):
     continuation, full_text = _generate_continuation(
         text, _model, _tokenizer,
         max_new_tokens=10,
-        temperature=0.1
+        temperature=temperature
     )
 
     # Wrap in HTML for direct display

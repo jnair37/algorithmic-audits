@@ -41,6 +41,40 @@ from credit_utility import (
 )
 
 
+### Hoverable legend for interp colorscale...
+def create_hoverable_legend(min_val=0, max_val=100, label="Value"):
+    return f"""
+    <div style="margin: 20px 0; font-family: sans-serif;">
+        <div style="font-weight: bold; margin-bottom: 8px;">{label}</div>
+        <div style="position: relative;">
+            <div
+                onmousemove="
+                    const rect = this.getBoundingClientRect();
+                    const x = event.clientX - rect.left;
+                    const percent = x / rect.width;
+                    const value = ({min_val} + ({max_val} - {min_val}) * percent).toFixed(1);
+                    document.getElementById('valueText').textContent = 'Value: ' + value;
+                "
+                onmouseleave="document.getElementById('valueText').textContent = 'Hover to see value';"
+                style="
+                    height: 30px;
+                    background: linear-gradient(to right, blue, cyan, yellow, red);
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                    cursor: crosshair;
+            "></div>
+            <div id="valueText" style="margin-top: 8px; font-size: 14px; color: #999;">
+                Hover to see value
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-top: 5px; font-size: 12px; color: #666;">
+                <span>{min_val}</span>
+                <span>{(min_val + max_val) / 2}</span>
+                <span>{max_val}</span>
+            </div>
+        </div>
+    </div>
+    """
+
 # Cell 5: Create the Gradio Interface
 with gr.Blocks(title="Test Auditing Interface") as demo:
     gr.Markdown("# Prototype Auditing Interface")
@@ -80,6 +114,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         label="Explanation Method",
                         interactive=False
                     )
+                    temperature_slider = gr.Slider(minimum=0, maximum=1, value=0.1, step=0.01, label="Model Temperature")                    
                     with gr.Row():
                         resume_analyze_btn = gr.Button("Analyze", variant="primary")
                         resume_reset_btn = gr.Button("Revert to Original", variant="secondary")
@@ -93,7 +128,9 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         label="Model Output",
                         value="<p>Click 'Analyze' to see results...</p>"
                     )
-                    resume_explain_btn = gr.Button("Explain", variant='primary', interactive=False)
+                    # TODO: Swap pure html output for clickable token
+                    # TODO: add token selection to explanation input.. 
+                    resume_explain_btn = gr.Button("Explain", variant='primary', interactive=True)
                     explanation_html = gr.HTML(
                         label="Explanation",
                         value="<p>No explanation generated. Click 'Explain' to see results...</p>"
@@ -119,7 +156,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
             # MODIFIED: Added resume_current_model_display to outputs
             resume_analyze_btn.click(
                 fn=process_resume,
-                inputs=[resume_text_input, resume_method_dropdown],
+                inputs=[resume_text_input, resume_method_dropdown, temperature_slider],
                 outputs=[pure_html_output, continuation_state, fulltext_state, resume_current_model_display] 
             )
 

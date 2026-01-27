@@ -10,7 +10,7 @@ from datasets import load_dataset
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
-from captum.attr import IntegratedGradients
+from captum.attr import IntegratedGradients, NoiseTunnel
 import gradio as gr
 import io
 
@@ -80,6 +80,7 @@ def _generate_continuation(text, model, tokenizer, max_new_tokens=10, temperatur
         continuation: Generated text (without the input)
         full_text: Input + generated text
     """
+
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
     input_length = inputs['input_ids'].shape[1]
 
@@ -122,79 +123,63 @@ def _generate_continuation(text, model, tokenizer, max_new_tokens=10, temperatur
 
 #### UPDATE: NOISE TUNNEL FOR OPTIMAL INTERP
 
+
+
 def _get_integrated_gradients_with_noise_tunnel(text, model, tokenizer, target_token_id=None,
-                                     n_steps=50, position=-1, nt_samples=10, nt_type='smoothgrad'):
+                                     n_steps=50, position=-1, nt_samples=10, nt_type='smoothgrad',
+                                     precomputed_logits=None):
     """
-    Compute Integrated Gradients with NoiseTunnel for causal LM.
-    Args:
-        text: Input text (includes partial generation)
-        target_token_id: Target token to explain (if None, uses predicted token)
-        n_steps: Number of integration steps
-        position: Position to predict next token for (-1 = last position)
-        nt_samples: Number of samples for NoiseTunnel
-        nt_type: Type of noise tunnel ('smoothgrad', 'smoothgrad_sq', 'vargrad')
+    Compute Integrated Gradients with NoiseTunnel
     """
-    from captum.attr import IntegratedGradients, NoiseTunnel
-    import torch
-    import numpy as np
-    
-    print("tokenizing input")
     # Tokenize input
     inputs = tokenizer(text, return_tensors="pt")
     input_ids = inputs['input_ids'].to(model.device)
-    
-    print('getting embed layer')
-    # Get the embedding layer (compatible with different architectures)
+
+    # Get the embedding layer
     embedding_layer = None
     if hasattr(model, 'get_input_embeddings'):
         embedding_layer = model.get_input_embeddings()
     elif hasattr(model, 'transformer') and hasattr(model.transformer, 'wte'):
-        embedding_layer = model.transformer.wte  # GPT-2 style
+        embedding_layer = model.transformer.wte
     elif hasattr(model, 'model') and hasattr(model.model, 'embed_tokens'):
-        embedding_layer = model.model.embed_tokens  # LLaMA style
+        embedding_layer = model.model.embed_tokens
     elif hasattr(model, 'bert') and hasattr(model.bert, 'embeddings'):
-        embedding_layer = model.bert.embeddings.word_embeddings  # BERT style
+        embedding_layer = model.bert.embeddings.word_embeddings
     else:
         raise ValueError("Could not find embedding layer in model")
-    
-    print("detaching")
+
     # Get embeddings
     input_embeds = embedding_layer(input_ids).detach().clone()
     input_embeds.requires_grad = True
-    
-    print('get next token')
-    # Define forward function for Captum
+
+    # Define forward function
     def forward_func(embeds):
-        # Create attention mask if needed
-        attention_mask = torch.ones(embeds.shape[0], embeds.shape[1], 
+        attention_mask = torch.ones(embeds.shape[0], embeds.shape[1],
                                    dtype=torch.long, device=embeds.device)
-        
-        # Forward pass with embeddings
         outputs = model(inputs_embeds=embeds, attention_mask=attention_mask)
         logits = outputs.logits
-        
-        # Get logits for the target position
         target_logits = logits[:, position, :]
-        
         return target_logits
-    
-    # Get next token logits for return
-    with torch.no_grad():
-        next_token_logits = forward_func(input_embeds)
-    
-    # If no target token specified, use the predicted token
+
+    # Use precomputed logits if available
+    if precomputed_logits is not None:
+        next_token_logits = precomputed_logits
+        if isinstance(next_token_logits, np.ndarray):
+            next_token_logits = torch.from_numpy(next_token_logits).to(model.device)
+    else:
+        with torch.no_grad():
+            next_token_logits = forward_func(input_embeds)
+
     if target_token_id is None:
         target_token_id = next_token_logits.argmax(dim=-1).item()
-    
-    # Create baseline (zero embeddings)
+
+    # Create baseline
     baseline = torch.zeros_like(input_embeds)
-    
-    # Initialize Integrated Gradients
+
+    # Initialize Integrated Gradients WITH NoiseTunnel
     ig = IntegratedGradients(forward_func)
-    
-    # Wrap with NoiseTunnel
     nt = NoiseTunnel(ig)
-    
+
     # Compute attributions
     attributions = nt.attribute(
         input_embeds,
@@ -205,23 +190,30 @@ def _get_integrated_gradients_with_noise_tunnel(text, model, tokenizer, target_t
         nt_type=nt_type,
         internal_batch_size=1
     )
-    
-    # Sum attributions across embedding dimension to get per-token scores
+
+    # Sum attributions across embedding dimension
     token_attributions = attributions.sum(dim=-1).squeeze(0)
-    
-    # Convert to numpy
     attr_scores = token_attributions.detach().cpu().numpy()
-    
-    # Get tokens for interpretation
     tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
     
-    # Base values (baseline embeddings summed, should be zeros)
-    base_values = np.zeros_like(attr_scores)
-    
-    # Output names (the predicted/target token)
+    # Fixing base values
+    # Get base value (prediction with zero embeddings)
+    with torch.no_grad():
+        zero_embeds = torch.zeros((1, input_ids.shape[1], embedding_layer.embedding_dim)).to(input_ids.device)
+        attention_mask = torch.ones_like(input_ids)
+        base_outputs = model(inputs_embeds=zero_embeds, attention_mask=attention_mask)
+        base_logits = base_outputs.logits[0, position, :]
+        base_values = torch.softmax(base_logits, dim=-1).cpu().numpy()
+    print(len(base_values))
+
     output_names = [tokenizer.decode([target_token_id])]
-    
-    return attr_scores, tokens, base_values, output_names, next_token_logits.cpu().numpy()
+
+    if isinstance(next_token_logits, torch.Tensor):
+        next_token_logits = next_token_logits.cpu().numpy()
+    if len(next_token_logits.shape) == 0:
+        next_token_logits = next_token_logits.reshape(1)
+
+    return attr_scores, tokens, base_values, output_names, next_token_logits
 
 def _get_integrated_gradients_causal(text, model, tokenizer, target_token_id=None,
                                      n_steps=50, position=-1):
@@ -616,6 +608,11 @@ def explain_generation(
         continuation, tokenizer
     )
 
+    print("target token ?")
+    print(target_token_id)
+    print(target_token_str)
+    print(token_position)
+
     if target_token_id is None:
         raise ValueError("Could not select a target token from continuation")
 
@@ -653,6 +650,8 @@ def explain_generation(
     print(f"\n{'='*70}")
     print(f"STEP 4: COMPUTING ATTRIBUTIONS FOR '{clean_target}'...")
     print(f"{'='*70}")
+
+    print("get expl call")
 
     explanation = get_explanation(
         extended_input,  # Use extended input!
@@ -808,6 +807,7 @@ def get_explanation(
     # Route to appropriate method
     if method == "integrated_gradients" or method == "ig":
         n_steps = kwargs.get('n_steps', 50)
+        print('calling noise tunnel')
         attr_scores, tokens, base_values, output_names, logits = _get_integrated_gradients_with_noise_tunnel(
             text, model, tokenizer, target_token_id, n_steps, position
         )
@@ -841,6 +841,7 @@ def get_explanation(
             f"layer_integrated_gradients, shap"
         )
 
+    print("DONE CALLING WOOOO")
     # Convert to SHAP-compatible format
     n_tokens = len(tokens)
     vocab_size = len(base_values)
@@ -848,6 +849,14 @@ def get_explanation(
     # Reshape values to match SHAP format: (1, n_tokens, vocab_size)
     # For efficiency, we only store attributions for the target token
     values = np.zeros((1, n_tokens, vocab_size))
+    print(np.shape(values))
+
+    print("# tokens")
+    print(n_tokens)
+    print('vocab')
+    print(vocab_size)
+    print("target")
+    print(target_token_id)
 
     # Assign attribution scores to the target token
     if target_token_id is not None:
@@ -1089,8 +1098,8 @@ the_one_model = 'EleutherAI/gpt-neo-125M'
 sample_corpus = beginning_prompt + resume_text + ending_prompt
 
 lm_model_name = the_one_model
-_model = AutoModelForCausalLM.from_pretrained(lm_model_name)
-_tokenizer = AutoTokenizer.from_pretrained(lm_model_name)
+_model = None #AutoModelForCausalLM.from_pretrained(lm_model_name)
+_tokenizer = None #AutoTokenizer.from_pretrained(lm_model_name)
 
 # ADDED: Model registry
 RESUME_MODELS = {
@@ -1106,6 +1115,8 @@ def _initialize_model(model_name=None):
     """Initialize or load the resume screening model"""
     global _tokenizer, _model, lm_model_name
     
+    print("is this ever called")
+
     if model_name is not None:
         lm_model_name = model_name
     
@@ -1118,11 +1129,23 @@ def _initialize_model(model_name=None):
             
             # Load model for sequence classification
             # For demonstration, we'll use 2 classes (qualified/not qualified)
-            _model = AutoModelForSequenceClassification.from_pretrained(
-                model_id,
-                num_labels=2,
-                ignore_mismatched_sizes=True
-            ).eval()
+            # _model = AutoModelForSequenceClassification.from_pretrained(
+            #     model_id,
+            #     num_labels=2,
+            #     ignore_mismatched_sizes=True
+            # ).eval()
+            _model = AutoModelForCausalLM.from_pretrained(lm_model_name)
+            
+            if _tokenizer.pad_token is None:
+                _tokenizer.pad_token = _tokenizer.eos_token
+
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            _model = _model.to(device)
+            _model.eval()
+
+            print("!@#$%^&*")
+
+            print(f"Model loaded on {device}")
             
             print(f"Model loaded successfully: {lm_model_name}")
         except Exception as e:
@@ -1246,6 +1269,9 @@ def process_resume(text, method, temperature):
 
     # Call resume screening model
     
+    if _model is None or _tokenizer is None:
+        _initialize_model(lm_model_name)
+
     # now: GENERATE FIRST and return before explaining
     continuation, full_text = _generate_continuation(
         text, _model, _tokenizer,

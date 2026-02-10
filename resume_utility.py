@@ -13,6 +13,10 @@ from PIL import Image
 from captum.attr import IntegratedGradients, NoiseTunnel
 import gradio as gr
 import io
+from faker import Faker
+import random
+
+fake = Faker()
 
 # ============================================================================
 # SHAP-Compatible Output Format
@@ -1291,164 +1295,61 @@ def process_resume(text, method, temperature):
     return html_output, continuation, full_text, model_display
 
 
-import random
 
-def generate_synthetic_variations(custom_prompt, num_variations=5, temperature=0.9):
+def generate_names_faker(num, dimension='Gender'):
     """
-    Use the currently loaded LLM to generate synthetic variations using a custom prompt.
-    ...
-    """
-    global _model, _tokenizer, lm_model_name
-    
-    # Ensure model is initialized
-    if _model is None or _tokenizer is None:
-        _initialize_model(lm_model_name)
-    
-    # Set a random seed to ensure diversity
-    seed = random.randint(0, 100000)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    print(f"DEBUG: Using random seed {seed} for synthetic generation")
-    
-    print(f"Generating synthetic data using loaded model: {lm_model_name}...")
-    
-    # Update the prompt to request the exact number of variations
-    if "{num}" in custom_prompt or "{num_variations}" in custom_prompt:
-        formatted_prompt = custom_prompt.replace("{num}", str(num_variations)).replace("{num_variations}", str(num_variations))
-    else:
-        # Just use the prompt as is, maybe append a newline if needed
-        formatted_prompt = f"{custom_prompt}\n"
-    
-    # Generate variations using the loaded model
-    # Note: Base models like GPT-Neo might need diverse prompting strategies compared to Instruct models
-    # Use a completion-style prompt for base models
-    if "instruct" not in lm_model_name.lower():
-        # Clean up prompt to extract just the item name
-        item_name = custom_prompt.lower().replace('generate', '').replace('list of', '').strip()
-        formatted_prompt = f"List of {num_variations} {item_name}:\n1."
-    else:
-        formatted_prompt = f"{custom_prompt}\nOutput format: 1. Item\n2. Item\n..."
-        
-    print(f"DEBUG: Synthetic generation prompt: {formatted_prompt}")
-
-    inputs = _tokenizer(formatted_prompt, return_tensors="pt").to(next(_model.parameters()).device)
-
-    with torch.no_grad():
-        outputs = _model.generate(
-            **inputs,
-            max_new_tokens=256,
-            temperature=temperature, # Use user-specified temperature
-            top_p=0.95,
-            repetition_penalty=1.2, # Discourage repetition
-            do_sample=True,
-            pad_token_id=_tokenizer.eos_token_id
-        )
-    
-    # Decode the output
-    generated_text = _tokenizer.decode(outputs[0], skip_special_tokens=True)
-    
-    # Extract just the generated part (remove the prompt)
-    if generated_text.startswith(formatted_prompt):
-        response = generated_text[len(formatted_prompt):]
-    elif formatted_prompt.strip() in generated_text:
-         response = generated_text.split(formatted_prompt.strip())[-1]
-    else:
-        # Fallback if specific decoding issues
-        response = generated_text
-        
-    print(f"DEBUG: Raw generated response: {response[:200]}...")
-    
-    # Parse the response to extract variations
-    variations = parse_llm_response(response, num_variations)
-    
-    print(f"DEBUG: Parsed variations: {variations}")
-    return variations
-
-
-def parse_llm_response(response, expected_count):
-    """
-    Parse the LLM response to extract a clean list of variations.
+    Generate synthetic names using the Faker library.
     
     Args:
-        response: Raw LLM response
-        expected_count: Expected number of variations
+        num: Number of names to generate
+        dimension: Dimension to vary (Gender or Variety/Ethnicity)
     
     Returns:
-        List of variation strings
+        List of generated first names
     """
-    # Remove common prefixes/suffixes
-    response = response.strip()
+    # Map variety display names to Faker locales
+    locales = [
+        'en_US', # English (US)
+        'es_ES', # Spanish (Spain)
+        'fr_FR', # French (France)
+        'de_DE', # German (Germany)
+        'it_IT', # Italian (Italy)
+        'en_IN', # English (India)
+        'en_CA'  # English (Canada)
+    ]
     
-    # Remove markdown formatting if present
-    response = response.replace('```', '').strip()
+    names = []
     
-    # Strategy 1: Split by comma
-    comma_variations = [v.strip() for v in response.split(',')]
-    
-    # Strategy 2: Split by newline
-    newline_variations = [v.strip() for v in response.split('\n') if v.strip()]
-    
-    # Choose the strategy that yields more items (closer to usually expected count > 1)
-    if len(newline_variations) > len(comma_variations) and len(newline_variations) > 1:
-        variations = newline_variations
+    if dimension == 'Gender':
+        f = Faker('en_US')
+        for _ in range(num // 2):
+            names.append(f.first_name_male())
+        for _ in range(num - (num // 2)):
+            names.append(f.first_name_female())
+    elif dimension == 'Variety/Ethnicity':
+        for i in range(num):
+            # Rotate through locales
+            f = Faker(locales[i % len(locales)])
+            names.append(f.first_name())
     else:
-        variations = comma_variations
+        # Fallback to random English names
+        f = Faker('en_US')
+        for _ in range(num):
+             names.append(f.first_name())
     
-    # Remove numbering if present (e.g., "1. Harvard" -> "Harvard")
-    # Improved regex-like removal without regex module
-    cleaned_variations = []
-    for v in variations:
-        v_clean = v.strip()
-        # Remove "1. ", "2) ", "- " prefix styles
-        if len(v_clean) > 0 and v_clean[0].isdigit():
-            # Find first non-digit/non-dot/non-paren/non-space
-            for i, char in enumerate(v_clean):
-                if not (char.isdigit() or char in ['.', ')', ' ']):
-                     v_clean = v_clean[i:]
-                     break
-        elif v_clean.startswith('- ') or v_clean.startswith('* '):
-             v_clean = v_clean[2:]
-        
-        cleaned_variations.append(v_clean)
-    
-    variations = cleaned_variations
-    
-    # Remove quotes if present
-    variations = [v.strip('"').strip("'") for v in variations]
-    
-    # Remove any parenthetical explanations (e.g., "Harvard (US)" -> "Harvard")
-    variations = [v.split('(')[0].strip() if '(' in v else v for v in variations]
-    
-    # Filter out empty strings, very long strings, and very short strings
-    variations = [v for v in variations if v and 2 <= len(v) <= 100]
-    
-    # Filter out common non-data keywords (only if they constitute the entire item essentially, or very clearly not data)
-    # Be careful not to filter out valid data containing these words
-    # A blacklist of exact phrases or very strong signals
-    blacklist_starts = ["here is", "sure,", "generated", "list of", "variations:"]
-    variations = [v for v in variations if not any(v.lower().startswith(s) for s in blacklist_starts)]
+    return list(set(names)) # Return unique names
 
-    # If we still have no valid variations, return a more descriptive fallback
-    if len(variations) == 0:
-        print(f"Warning: Could not parse LLM response. Raw response: {response[:200]}")
-        return [f"ModelGenerationFailed_{i}" for i in range(1, expected_count + 1)]
-    
-    # Return only the requested number (or fewer if we couldn't parse enough)
-    return variations[:expected_count]
-
-
-def process_batch_resume(text, method, temperature, batch_token, custom_prompt, num_variations):
+def process_batch_resume(text, method, temperature, batch_token, num_variations, dimension_to_vary):
     """
-    Process multiple resume variations by replacing a specified token with LLM-generated alternatives.
+    Process multiple resume variations by replacing a specified token with Faker-generated names.
     
     Args:
         text: Original resume text
         method: Explanation method (not used in batch mode currently)
         temperature: Model temperature for generation
-        batch_token: Single token to vary (e.g., "Stanford", "John", "Python")
-        custom_prompt: User-provided prompt for generating variations
+        batch_token: Single token to vary (e.g., "John")
         num_variations: Number of variations to generate
+        dimension_to_vary: 'Gender' or 'Variety/Ethnicity'
     
     Returns:
         html_output: HTML displaying batch results
@@ -1462,20 +1363,15 @@ def process_batch_resume(text, method, temperature, batch_token, custom_prompt, 
     if not batch_token or not batch_token.strip():
         return "<p>Please specify a token to vary for batch analysis...</p>", None, None, ""
     
-    if not custom_prompt or not custom_prompt.strip():
-        return "<p>Please provide a prompt for generating variations...</p>", None, None, ""
-    
     # Import necessary components (assuming these are available in resume_utility)
-    # You'll need to expose these or import them appropriately
     global _model, _tokenizer, lm_model_name
     if _model is None or _tokenizer is None:
         _initialize_model(lm_model_name)
     
-    # Generate variations using LLM with custom prompt
-    print(f"Generating {num_variations} variations for token: {batch_token}")
-    print(f"Using prompt: {custom_prompt[:100]}...")
+    # Generate variations using Faker
+    print(f"Generating {num_variations} variations for token: {batch_token} varying by {dimension_to_vary}")
     
-    variations = generate_synthetic_variations(custom_prompt, num_variations=num_variations, temperature=temperature)
+    variations = generate_names_faker(num_variations, dimension=dimension_to_vary)
     print(f"Generated {len(variations)} variations: {variations}")  
     
     # IMPORTANT: Reduce number of runs to avoid timeout

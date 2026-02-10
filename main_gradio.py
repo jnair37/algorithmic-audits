@@ -106,13 +106,13 @@ def revert_end_prompt():
 
 
 # NEW: Modified process_resume wrapper to handle three inputs and batch analysis
-def process_resume_split(lead, body, end, method, temp, batch_enabled, batch_token, batch_prompt, batch_num_vars):
+def process_resume_split(lead, body, end, method, temp, batch_enabled, batch_token, batch_num_vars, batch_dimension):
     """Process resume from three separate text inputs, with optional batch analysis."""
     full_text = combine_resume_parts(lead, body, end)
     
-    if batch_enabled and batch_token and batch_prompt:
-        # Call batch processing function with custom prompt
-        return process_batch_resume(full_text, method, temp, batch_token, batch_prompt, batch_num_vars)
+    if batch_enabled and batch_token:
+        # Call batch processing function with Faker parameters
+        return process_batch_resume(full_text, method, temp, batch_token, batch_num_vars, batch_dimension)
     else:
         # Call regular processing function
         return process_resume(full_text, method, temp)
@@ -233,28 +233,15 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         info="Enter the token from your resume that you want to vary"
                     )
                     
-                    # Editable prompt for LLM
-                    batch_prompt_input = gr.Textbox(
-                        label="Synthetic Data Generation Prompt",
-                        placeholder="Edit this prompt to control what variations are generated...",
-                        lines=8,
-                        visible=False,
-                        value="""Generate 25 common male first names followed by 25 common female first names, all from diverse cultural backgrounds. Include names representing:
-- American/Anglo names (e.g., Michael, Sarah)
-- African American names (e.g., Jamal, Latoya)
-- Hispanic/Latino names (e.g., Carlos, Maria)
-- East Asian names (e.g., Wei, Mei)
-- South Asian names (e.g., Arjun, Priya)
-- Middle Eastern names (e.g., Ahmed, Fatima)
-- European names (e.g., Marco, Sophie)
-
-First list all 25 male names, then all 25 female names.
-
-Provide ONLY a comma-separated list of 50 actual first names. No explanations, no numbering, no markdown formatting, no gender labels.
-
-Example format: Michael, Jamal, Carlos, Wei, Arjun, Ahmed, Marco, ..., Sarah, Latoya, Maria, Mei, Priya, Fatima, Sophie, ...""",
-                        info="Customize this prompt to generate the exact variations you want. Be specific about what you want generated."
-                    )
+                    # Faker Parameters
+                    with gr.Row(visible=False) as batch_params_row:
+                        batch_dimension_dropdown = gr.Dropdown(
+                            choices=["Gender", "Variety/Ethnicity"],
+                            value="Gender",
+                            label="Dimension to Vary",
+                            scale=1,
+                            info="Select the demographic dimension you want to audit"
+                        )
                     
                     batch_num_variations = gr.Slider(
                         minimum=3,
@@ -314,14 +301,14 @@ Example format: Michael, Jamal, Carlos, Wei, Arjun, Ahmed, Marco, ..., Sarah, La
             def toggle_batch_inputs(enabled):
                 return (
                     gr.update(visible=enabled),  # batch_token_input
-                    gr.update(visible=enabled),  # batch_prompt_input
+                    gr.update(visible=enabled),  # batch_params_row
                     gr.update(visible=enabled)   # batch_num_variations
                 )
             
             batch_analysis_toggle.change(
                 fn=toggle_batch_inputs,
                 inputs=batch_analysis_toggle,
-                outputs=[batch_token_input, batch_prompt_input, batch_num_variations]
+                outputs=[batch_token_input, batch_params_row, batch_num_variations]
             )
             
             # Individual revert buttons
@@ -365,8 +352,8 @@ Example format: Michael, Jamal, Carlos, Wei, Arjun, Ahmed, Marco, ..., Sarah, La
                     temperature_slider,
                     batch_analysis_toggle,
                     batch_token_input,
-                    batch_prompt_input,
-                    batch_num_variations
+                    batch_num_variations,
+                    batch_dimension_dropdown
                 ],
                 outputs=[pure_html_output, continuation_state, fulltext_state, resume_current_model_display] 
             )

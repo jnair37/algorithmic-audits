@@ -215,7 +215,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                     with gr.Row():
                         revert_end_btn = gr.Button("⟲ Revert End", variant="secondary", size="sm")
                     
-                    temperature_slider = gr.Slider(minimum=0, maximum=1, value=0.05, step=0.01, label="Model Temperature")
+                    temperature_slider = gr.Slider(minimum=0, maximum=1, value=0.45, step=0.01, label="Model Temperature")
                     
                     # Batch Analysis Section
                     gr.Markdown("#### Batch Analysis")

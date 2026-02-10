@@ -1378,7 +1378,7 @@ def generate_audit_chart(cat_stats, dimension):
     ax.bar(x + width, negatives, width, label='Negative', color='#e74c3c')
 
     ax.set_ylabel('Number of Variations', color='#000')
-    ax.set_title(f'Audit Distribution by {dimension}', color='#000', fontsize=14)
+    ax.set_title(f'Outcome Distribution by {dimension}', color='#000', fontsize=14)
     ax.set_xticks(x)
     ax.set_xticklabels(categories, color='#000')
     ax.legend()

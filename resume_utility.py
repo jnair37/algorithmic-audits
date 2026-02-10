@@ -1358,15 +1358,15 @@ def generate_names_faker(num, dimension='Gender'):
     
     return list(unique_names.items())[:num]
 
-def generate_audit_chart(cat_stats, dimension):
+def generate_audit_chart(stats, dimension, title=None, ylabel='Number of Variations'):
     """Generate a bar plot for audit results."""
-    categories = list(cat_stats.keys())
+    categories = list(stats.keys())
     if not categories:
         return ""
         
-    positives = [cat_stats[c]['positive'] for c in categories]
-    neutrals = [cat_stats[c]['neutral'] for c in categories]
-    negatives = [cat_stats[c]['negative'] for c in categories]
+    positives = [stats[c]['positive'] for c in categories]
+    neutrals = [stats[c]['neutral'] for c in categories]
+    negatives = [stats[c]['negative'] for c in categories]
 
     x = np.arange(len(categories))
     width = 0.25
@@ -1377,8 +1377,9 @@ def generate_audit_chart(cat_stats, dimension):
     ax.bar(x, neutrals, width, label='Neutral', color='#95a5a6')
     ax.bar(x + width, negatives, width, label='Negative', color='#e74c3c')
 
-    ax.set_ylabel('Number of Variations', color='#000')
-    ax.set_title(f'Outcome Distribution by {dimension}', color='#000', fontsize=14)
+    ax.set_ylabel(ylabel, color='#000')
+    chart_title = title if title else f'Outcome Distribution by {dimension}'
+    ax.set_title(chart_title, color='#000', fontsize=14)
     ax.set_xticks(x)
     ax.set_xticklabels(categories, color='#000')
     ax.legend()
@@ -1459,11 +1460,14 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
             return 0
     
     # Stats for visualization
-    # cat_stats[category][sentiment] = count
+    # cat_stats[category][sentiment] = count of variations with that average sentiment
+    # run_stats[category][sentiment] = total count of runs with that sentiment
     cat_stats = {}
+    run_stats = {}
     
     # First, add the original text as baseline (with multiple runs)
     print(f"Running baseline (original) analysis for token: '{batch_token}'")
+    baseline_cat = 'Original'
     original_runs = []
     original_scores = []
     
@@ -1478,13 +1482,19 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
             'continuation': continuation,
             'full_text': full_text
         })
-        original_scores.append(classify_continuation(continuation))
+        run_score = classify_continuation(continuation)
+        original_scores.append(run_score)
+        
+        # Track run stats for baseline
+        if baseline_cat not in run_stats:
+            run_stats[baseline_cat] = {'positive': 0, 'negative': 0, 'neutral': 0}
+        run_sentiment = 'positive' if run_score == 1 else 'negative' if run_score == -1 else 'neutral'
+        run_stats[baseline_cat][run_sentiment] += 1
     
     original_avg_score = sum(original_scores) / len(original_scores)
     original_overall_sentiment = 'positive' if original_avg_score > 0 else 'negative' if original_avg_score < 0 else 'neutral'
     
     # Categorize baseline for stats
-    baseline_cat = 'Original'
     if baseline_cat not in cat_stats:
         cat_stats[baseline_cat] = {'positive': 0, 'negative': 0, 'neutral': 0}
     cat_stats[baseline_cat][original_overall_sentiment] += 1
@@ -1509,6 +1519,8 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
     for var_idx, (replacement, category) in enumerate(variations_with_cats):
         if category not in cat_stats:
             cat_stats[category] = {'positive': 0, 'negative': 0, 'neutral': 0}
+        if category not in run_stats:
+            run_stats[category] = {'positive': 0, 'negative': 0, 'neutral': 0}
             
         if var_idx % 10 == 0:
             print(f"  Progress: {var_idx}/{len(variations_with_cats)} variations complete")
@@ -1538,7 +1550,12 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
                 'continuation': continuation,
                 'full_text': full_text
             })
-            variation_scores.append(classify_continuation(continuation))
+            run_score = classify_continuation(continuation)
+            variation_scores.append(run_score)
+            
+            # Update run stats
+            run_sentiment = 'positive' if run_score == 1 else 'negative' if run_score == -1 else 'neutral'
+            run_stats[category][run_sentiment] += 1
         
         # Calculate average score and overall sentiment
         avg_score = sum(variation_scores) / len(variation_scores)
@@ -1566,9 +1583,23 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
     negative_count = sum(1 for r in batch_results if r['sentiment'] == 'negative')
     neutral_count = sum(1 for r in batch_results if r['sentiment'] == 'neutral')
     
-    # Generate the visualization
-    chart_base64 = generate_audit_chart(cat_stats, dimension_to_vary)
-    chart_html = f'<div style="margin: 20px 0; text-align: center;"><img src="data:image/png;base64,{chart_base64}" style="max-width: 100%; border-radius: 5px; border: 1px solid #ddd;" /></div>' if chart_base64 else ""
+    # Generate the visualizations
+    chart_cat_base64 = generate_audit_chart(cat_stats, dimension_to_vary, title=f"Outcome Distribution by Name ({dimension_to_vary})", ylabel='Number of Names')
+    chart_run_base64 = generate_audit_chart(run_stats, dimension_to_vary, title=f"Outcome Distribution by Run (All Inferences)", ylabel='Number of Runs')
+    
+    total_inferences_count = len(batch_results) * num_runs_per_variation
+    chart_html = f"""
+    <div style="margin: 20px 0; display: flex; flex-wrap: wrap; justify-content: space-around; gap: 20px;">
+        <div style="flex: 1; min-width: 400px; text-align: center;">
+            <img src="data:image/png;base64,{chart_cat_base64}" style="max-width: 100%; border-radius: 5px; border: 1px solid #ddd;" />
+            <p style="color: #666; font-size: 0.9em; margin-top: 5px;">Aggregated by variation (e.g., {len(batch_results)} data points)</p>
+        </div>
+        <div style="flex: 1; min-width: 400px; text-align: center;">
+            <img src="data:image/png;base64,{chart_run_base64}" style="max-width: 100%; border-radius: 5px; border: 1px solid #ddd;" />
+            <p style="color: #666; font-size: 0.9em; margin-top: 5px;">Aggregated by individual run (e.g., {total_inferences_count} data points)</p>
+        </div>
+    </div>
+    """ if chart_cat_base64 and chart_run_base64 else ""
 
     # Generate HTML output with summary and detailed results
     html_output = f"""
@@ -1679,8 +1710,35 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
     
     model_display = f"**Model:** {lm_model_name} (Batch Mode - {len(variations_with_cats)} variations)"
     
-    # Return None for continuation and full_text since we're showing batch results
-    return html_output, None, None, model_display
+    # Return batch_results as state so we can use the carousel
+    return html_output, batch_results, None, model_display
+
+def explain_batch_variation(batch_results, current_index, method):
+    """
+    Generate an explanation for a specific variation selected from the batch.
+    """
+    if not batch_results or current_index >= len(batch_results):
+        return "<p style='color: red;'>Error: Invalid variation selection.</p>"
+    
+    result = batch_results[int(current_index)]
+    
+    # We use the first run's full text and continuation for the explanation
+    # (Since user requested 'only one run per name needed')
+    full_text = result['runs'][0]['full_text']
+    continuation = result['runs'][0]['continuation']
+    
+    # Extract the original text from the full_text by removing the continuation
+    input_text = full_text[:len(full_text)-len(continuation)]
+
+    print(f"DEBUG: Explaining variation index {current_index}: '{result['variation']}'")
+    
+    highlights, outputs, _, _ = analyze_generation(
+        input_text, _model, _tokenizer, 
+        continuation, full_text, 
+        method=method
+    )
+
+    return highlight_text(input_text, highlights, outputs, title=f"Explanation for: {result['variation']}")
 
 # TODO: in the interp version, have the user select a target token from the above output, which triggers explain_resume
 def explain_resume(text, continuation, full_text, method):

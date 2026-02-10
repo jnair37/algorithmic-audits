@@ -12,6 +12,7 @@ from resume_utility import (
     process_resume,
     process_batch_resume,
     explain_resume,
+    explain_batch_variation,
     reset_resume_text, 
     save_resume_version, 
     load_resume_version, 
@@ -112,10 +113,14 @@ def process_resume_split(lead, body, end, method, temp, batch_enabled, batch_tok
     
     if batch_enabled and batch_token:
         # Call batch processing function with Faker parameters
-        return process_batch_resume(full_text, method, temp, batch_token, batch_num_vars, batch_dimension)
+        # NEW: returns (html, batch_results, None, model_display)
+        html, results, _, display = process_batch_resume(full_text, method, temp, batch_token, batch_num_vars, batch_dimension)
+        return html, results, None, None, display, gr.update(interactive=False), gr.update(visible=True, open=True), gr.update(maximum=len(results)-1)
     else:
         # Call regular processing function
-        return process_resume(full_text, method, temp)
+        # returns (html, continuation, full_text, model_display)
+        html, cont, full, display = process_resume(full_text, method, temp)
+        return html, [], cont, full, display, gr.update(interactive=True), gr.update(visible=False), gr.update(maximum=0)
 
 
 # NEW: Modified explain_resume wrapper to handle three inputs
@@ -281,6 +286,32 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         resume_save_btn = gr.Button("Save Current Version", variant="primary")
                     resume_save_status = gr.Markdown("")
 
+                    # NEW: Batch Interpretation Carousel
+                    with gr.Accordion("Batch Interpretation Carousel", open=False, visible=False) as batch_carousel_accordion:
+                        gr.Markdown("### variation Explorer")
+                        gr.Markdown("Select a variation from your last batch run to see its specific interpretability highlights.")
+                        
+                        batch_results_state = gr.State([])
+                        
+                        with gr.Row():
+                            carousel_index_slider = gr.Slider(
+                                minimum=0, maximum=19, value=0, step=1, 
+                                label="Select Variation index", 
+                                interactive=True
+                            )
+                        
+                        carousel_preview_html = gr.HTML(
+                            label="Variation Preview",
+                            value="<p>Select a variation to see details...</p>"
+                        )
+                        
+                        carousel_explain_btn = gr.Button("Explain Selection", variant="primary")
+                        
+                        carousel_explanation_html = gr.HTML(
+                            label="Carousel Explanation Results",
+                            value="<p>Explanation will appear here...</p>"
+                        )
+
                 # Right column - Saved version
                 with gr.Column(scale=1):
                     gr.Markdown("### Saved Version (Comparison)")
@@ -297,18 +328,24 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
 
             # Event Handlers
             
-            # Batch analysis toggle handler
-            def toggle_batch_inputs(enabled):
+            # Consolidated Batch UI toggle handler
+            def update_batch_ui(enabled, num_vars):
                 return (
-                    gr.update(visible=enabled),  # batch_token_input
-                    gr.update(visible=enabled),  # batch_params_row
-                    gr.update(visible=enabled)   # batch_num_variations
+                    gr.update(visible=enabled),           # batch_token_input
+                    gr.update(visible=enabled),           # batch_params_row
+                    gr.update(visible=enabled),           # batch_num_variations
+                    gr.update(interactive=not enabled),   # resume_explain_btn
+                    gr.update(visible=enabled),           # batch_carousel_accordion
+                    gr.update(maximum=num_vars)            # carousel_index_slider
                 )
             
             batch_analysis_toggle.change(
-                fn=toggle_batch_inputs,
-                inputs=batch_analysis_toggle,
-                outputs=[batch_token_input, batch_params_row, batch_num_variations]
+                fn=update_batch_ui,
+                inputs=[batch_analysis_toggle, batch_num_variations],
+                outputs=[
+                    batch_token_input, batch_params_row, batch_num_variations,
+                    resume_explain_btn, batch_carousel_accordion, carousel_index_slider
+                ]
             )
             
             # Individual revert buttons
@@ -355,8 +392,42 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                     batch_num_variations,
                     batch_dimension_dropdown
                 ],
-                outputs=[pure_html_output, continuation_state, fulltext_state, resume_current_model_display] 
+                outputs=[
+                    pure_html_output, batch_results_state, continuation_state, fulltext_state, 
+                    resume_current_model_display, resume_explain_btn, batch_carousel_accordion, carousel_index_slider
+                ] 
             )
+
+            # NEW: Carousel event handlers
+            def update_carousel_preview(results, index):
+                if not results or index >= len(results):
+                    return "<p>No variation data available.</p>"
+                res = results[int(index)]
+                sentiment_color = '#27ae60' if res['sentiment'] == 'positive' else '#e74c3c' if res['sentiment'] == 'negative' else '#7f8c8d'
+                
+                html = f"""
+                <div style="padding: 15px; border: 1px solid #ddd; border-radius: 5px; background: #fff; color: #000;">
+                    <p style="color: #000;"><strong>Variation:</strong> {res['variation']}</p>
+                    <p style="color: #000;"><strong>Category:</strong> {res['category']}</p>
+                    <p style="color: #000;"><strong>Sentiment:</strong> <span style="color: {sentiment_color}; font-weight: bold;">{res['sentiment'].upper()}</span></p>
+                    <hr>
+                    <p style="color: #000;"><strong>Continuation:</strong> "{res['continuation']}"</p>
+                </div>
+                """
+                return html
+
+            carousel_index_slider.change(
+                fn=update_carousel_preview,
+                inputs=[batch_results_state, carousel_index_slider],
+                outputs=carousel_preview_html
+            )
+
+            carousel_explain_btn.click(
+                fn=explain_batch_variation,
+                inputs=[batch_results_state, carousel_index_slider, resume_method_dropdown],
+                outputs=carousel_explanation_html
+            )
+
 
             # Explain button with three inputs
             resume_explain_btn.click(

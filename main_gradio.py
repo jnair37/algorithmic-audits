@@ -185,7 +185,8 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
             with gr.Row():
                 # Left column - Text editor (NOW WITH THREE SECTIONS)
                 with gr.Column(scale=1):
-                    gr.Markdown("### Modify Input Resume")
+                    gr.Markdown("### Step 1: Input & Configuration")
+                    gr.Markdown("Modify the resume content below and configure the analysis parameters.")
                     
                     # Lead Prompt Section
                     gr.Markdown("#### Lead Prompt (scaffolding before resume)")
@@ -196,7 +197,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         placeholder="Leading instructions or context..."
                     )
                     with gr.Row():
-                        revert_lead_btn = gr.Button("⟲ Revert Lead", variant="secondary", size="sm")
+                        revert_lead_btn = gr.Button("Revert Lead", variant="secondary", size="sm")
                     
                     # Main Body Section
                     gr.Markdown("#### Main Resume Body")
@@ -204,10 +205,10 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         value=initial_body,
                         lines=8,
                         label="Resume Content",
-                        placeholder="Main resume content..."
+                        placeholder="Paste the main resume content here..."
                     )
                     with gr.Row():
-                        revert_body_btn = gr.Button("⟲ Revert Body", variant="secondary", size="sm")
+                        revert_body_btn = gr.Button("Revert Body", variant="secondary", size="sm")
                     
                     # End Prompt Section
                     gr.Markdown("#### End Prompt (scaffolding after resume)")
@@ -218,12 +219,13 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         placeholder="Closing instructions..."
                     )
                     with gr.Row():
-                        revert_end_btn = gr.Button("⟲ Revert End", variant="secondary", size="sm")
+                        revert_end_btn = gr.Button("Revert End", variant="secondary", size="sm")
                     
                     temperature_slider = gr.Slider(minimum=0, maximum=1, value=0.45, step=0.01, label="Model Temperature")
                     
-                    # Batch Analysis Section
-                    gr.Markdown("#### Batch Analysis")
+                    gr.Markdown("---")
+                    gr.Markdown("### Analysis Settings")
+                    gr.Markdown("Choose between a single-run analysis or a batch audit of multiple variations.")
                     batch_analysis_toggle = gr.Checkbox(
                         label="Enable Batch Analysis",
                         value=False,
@@ -264,7 +266,8 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
 
                 # Middle column - Current analysis
                 with gr.Column(scale=1):
-                    gr.Markdown("### Current Analysis")
+                    gr.Markdown("### Step 2: Results & Interpretation")
+                    gr.Markdown("View the model's generated content and explore its decision-making process.")
                     # ADDED: Show current model being used
                     resume_current_model_display = gr.Markdown("**Model:** Loading...")
                     pure_html_output = gr.HTML(
@@ -284,8 +287,8 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                     )
                     
                     # NEW: Batch Interpretation Carousel
-                    with gr.Accordion("Batch Interpretation Carousel", open=False, visible=False) as batch_carousel_accordion:
-                        gr.Markdown("### variation Explorer")
+                    with gr.Accordion("Audit Variation Explorer (Carousel)", open=False, visible=False) as batch_carousel_accordion:
+                        gr.Markdown("### Variation Explorer")
                         gr.Markdown("Select a variation from your last batch run to see its specific interpretability highlights.")
                         
                         batch_results_state = gr.State([])
@@ -305,8 +308,8 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         carousel_explain_btn = gr.Button("Explain Selection", variant="primary")
                         
                         carousel_explanation_html = gr.HTML(
-                            label="Carousel Explanation Results",
-                            value="<p>Explanation will appear here...</p>"
+                            label="Variation Explanation Highlights",
+                            value="<p>Detailed analysis of the selected variation will appear here...</p>"
                         )
 
                     with gr.Row():
@@ -315,13 +318,14 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
 
                 # Right column - Saved version
                 with gr.Column(scale=1):
-                    gr.Markdown("### Saved Version (Comparison)")
+                    gr.Markdown("### Step 3: Compare & Track")
+                    gr.Markdown("Save versions to track your audit progress and compare different model behaviors side-by-side.")
                     resume_version_dropdown = gr.Dropdown(
                         choices=[],
                         label="Select saved version to compare",
                         interactive=True
                     )
-                    resume_clear_btn = gr.Button("🗑️ Clear Comparison", variant="secondary")
+                    resume_clear_btn = gr.Button("Clear Comparison", variant="secondary")
                     resume_comparison_output = gr.HTML(
                         label="Saved Highlights",
                         value="<p>No comparison loaded. Save a version and select it from the dropdown to compare.</p>"
@@ -646,7 +650,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                     )
                     credit_compare_btn = gr.Button("Compare Scenarios", variant="primary")
                     credit_scenario_plot = gr.Plot(label="Scenario Comparison")
-                    credit_export_btn = gr.Button("📄 Export Analysis Report", variant="secondary")
+                    credit_export_btn = gr.Button("Export Analysis Report", variant="secondary")
                     credit_export_status = gr.Markdown("")
             # event handlers:
 

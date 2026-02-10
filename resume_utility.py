@@ -1775,7 +1775,7 @@ def save_resume_version(text, html_content):
     }
     
     choices = list(_saved_versions.keys())
-    status = f"✅ Saved as: {version_name}"
+    status = f"Saved as: {version_name}"
     
     return status, gr.update(choices=choices)
 def load_resume_version(selected):

@@ -13,8 +13,10 @@ from PIL import Image
 from captum.attr import IntegratedGradients, NoiseTunnel
 import gradio as gr
 import io
+import base64
 from faker import Faker
 import random
+import matplotlib.pyplot as plt
 
 fake = Faker()
 
@@ -102,6 +104,8 @@ def _generate_continuation(text, model, tokenizer, max_new_tokens=10, temperatur
         truncation=True,
         return_full_text=False,
         temperature=temperature,
+        top_p=0.9, # Added for diversity
+        repetition_penalty=1.2, # Added for diversity
         do_sample=True if temperature > 0 else False
     )[0]['generated_text']
 
@@ -1300,44 +1304,99 @@ def generate_names_faker(num, dimension='Gender'):
     """
     Generate synthetic names using the Faker library.
     
-    Args:
-        num: Number of names to generate
-        dimension: Dimension to vary (Gender or Variety/Ethnicity)
-    
     Returns:
-        List of generated first names
+        List of tuples: [(name, category), ...]
     """
-    # Map variety display names to Faker locales
     locales = [
-        'en_US', # English (US)
-        'es_ES', # Spanish (Spain)
-        'fr_FR', # French (France)
-        'de_DE', # German (Germany)
-        'it_IT', # Italian (Italy)
-        'en_IN', # English (India)
-        'en_CA'  # English (Canada)
+        ('en_US', 'US English'),
+        ('es_ES', 'Spanish'),
+        ('fr_FR', 'French'),
+        ('de_DE', 'German'),
+        ('it_IT', 'Italian'),
+        ('en_IN', 'English (India)'),
+        ('en_CA', 'English (Canada)')
     ]
     
     names = []
     
+    # Use a set to track unique names while keeping their categories
+    unique_names = {}
+    
     if dimension == 'Gender':
         f = Faker('en_US')
-        for _ in range(num // 2):
-            names.append(f.first_name_male())
-        for _ in range(num - (num // 2)):
-            names.append(f.first_name_female())
+        target_male = num // 2
+        target_female = num - target_male
+        
+        # Generate male names
+        for _ in range(target_male * 5): # Allow for duplicates
+            if len(unique_names) >= target_male: break
+            name = f.first_name_male()
+            if name not in unique_names:
+                unique_names[name] = 'Male'
+        
+        # Generate female names
+        for _ in range(num * 5): # Allow for duplicates
+            if len(unique_names) >= num: break
+            name = f.first_name_female()
+            if name not in unique_names:
+                unique_names[name] = 'Female'
     elif dimension == 'Variety/Ethnicity':
-        for i in range(num):
-            # Rotate through locales
-            f = Faker(locales[i % len(locales)])
-            names.append(f.first_name())
+        for i in range(num * 2):
+            if len(unique_names) >= num: break
+            loc_code, loc_name = locales[i % len(locales)]
+            f = Faker(loc_code)
+            name = f.first_name()
+            if name not in unique_names:
+                unique_names[name] = loc_name
     else:
-        # Fallback to random English names
         f = Faker('en_US')
-        for _ in range(num):
-             names.append(f.first_name())
+        for _ in range(num * 2):
+            if len(unique_names) >= num: break
+            name = f.first_name()
+            if name not in unique_names:
+                unique_names[name] = 'Random'
     
-    return list(set(names)) # Return unique names
+    return list(unique_names.items())[:num]
+
+def generate_audit_chart(cat_stats, dimension):
+    """Generate a bar plot for audit results."""
+    categories = list(cat_stats.keys())
+    if not categories:
+        return ""
+        
+    positives = [cat_stats[c]['positive'] for c in categories]
+    neutrals = [cat_stats[c]['neutral'] for c in categories]
+    negatives = [cat_stats[c]['negative'] for c in categories]
+
+    x = np.arange(len(categories))
+    width = 0.25
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    
+    ax.bar(x - width, positives, width, label='Positive', color='#27ae60')
+    ax.bar(x, neutrals, width, label='Neutral', color='#95a5a6')
+    ax.bar(x + width, negatives, width, label='Negative', color='#e74c3c')
+
+    ax.set_ylabel('Number of Variations', color='#000')
+    ax.set_title(f'Audit Distribution by {dimension}', color='#000', fontsize=14)
+    ax.set_xticks(x)
+    ax.set_xticklabels(categories, color='#000')
+    ax.legend()
+    
+    # Ensure background is white and text is dark
+    ax.set_facecolor('white')
+    fig.patch.set_facecolor('white')
+    for label in ax.get_yticklabels():
+        label.set_color('#000')
+    
+    plt.tight_layout()
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    img_str = base64.b64encode(buf.read()).decode('utf-8')
+    return img_str
 
 def process_batch_resume(text, method, temperature, batch_token, num_variations, dimension_to_vary):
     """
@@ -1371,8 +1430,8 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
     # Generate variations using Faker
     print(f"Generating {num_variations} variations for token: {batch_token} varying by {dimension_to_vary}")
     
-    variations = generate_names_faker(num_variations, dimension=dimension_to_vary)
-    print(f"Generated {len(variations)} variations: {variations}")  
+    variations_with_cats = generate_names_faker(num_variations, dimension=dimension_to_vary)
+    print(f"Generated {len(variations_with_cats)} variations")  
     
     # IMPORTANT: Reduce number of runs to avoid timeout
     # For large batches (>20 variations), use fewer runs per variation
@@ -1399,6 +1458,10 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
         else:
             return 0
     
+    # Stats for visualization
+    # cat_stats[category][sentiment] = count
+    cat_stats = {}
+    
     # First, add the original text as baseline (with multiple runs)
     print(f"Running baseline (original) analysis for token: '{batch_token}'")
     original_runs = []
@@ -1420,10 +1483,17 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
     original_avg_score = sum(original_scores) / len(original_scores)
     original_overall_sentiment = 'positive' if original_avg_score > 0 else 'negative' if original_avg_score < 0 else 'neutral'
     
+    # Categorize baseline for stats
+    baseline_cat = 'Original'
+    if baseline_cat not in cat_stats:
+        cat_stats[baseline_cat] = {'positive': 0, 'negative': 0, 'neutral': 0}
+    cat_stats[baseline_cat][original_overall_sentiment] += 1
+
     batch_results.append({
         'variation': 'Original',
         'token': batch_token,
         'replacement': batch_token,
+        'category': 'Original',
         'runs': original_runs,
         'scores': original_scores,
         'avg_score': original_avg_score,
@@ -1432,13 +1502,16 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
     })
     
     # Process variations in batches to avoid timeout
-    print(f"Processing {len(variations)} variations with {num_runs_per_variation} runs each...")
-    total_inferences = len(variations) * num_runs_per_variation
+    print(f"Processing {len(variations_with_cats)} variations with {num_runs_per_variation} runs each...")
+    total_inferences = len(variations_with_cats) * num_runs_per_variation
     print(f"Total inferences to run: {total_inferences}")
     
-    for var_idx, replacement in enumerate(variations):
+    for var_idx, (replacement, category) in enumerate(variations_with_cats):
+        if category not in cat_stats:
+            cat_stats[category] = {'positive': 0, 'negative': 0, 'neutral': 0}
+            
         if var_idx % 10 == 0:
-            print(f"  Progress: {var_idx}/{len(variations)} variations complete")
+            print(f"  Progress: {var_idx}/{len(variations_with_cats)} variations complete")
         
         # Create varied text by replacing the token
         varied_text = text.replace(batch_token, replacement)
@@ -1471,10 +1544,14 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
         avg_score = sum(variation_scores) / len(variation_scores)
         overall_sentiment = 'positive' if avg_score > 0 else 'negative' if avg_score < 0 else 'neutral'
         
+        # Update stats
+        cat_stats[category][overall_sentiment] += 1
+        
         batch_results.append({
             'variation': f'{batch_token} → {replacement}',
             'token': batch_token,
             'replacement': replacement,
+            'category': category,
             'runs': variation_runs,
             'scores': variation_scores,
             'avg_score': avg_score,
@@ -1482,64 +1559,72 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
             'continuation': variation_runs[0]['continuation']  # For display purposes
         })
     
-    print(f"All {len(variations)} variations processed successfully!")
+    print(f"All {len(variations_with_cats)} variations processed successfully!")
     
     # Count overall sentiments
     positive_count = sum(1 for r in batch_results if r['sentiment'] == 'positive')
     negative_count = sum(1 for r in batch_results if r['sentiment'] == 'negative')
     neutral_count = sum(1 for r in batch_results if r['sentiment'] == 'neutral')
     
+    # Generate the visualization
+    chart_base64 = generate_audit_chart(cat_stats, dimension_to_vary)
+    chart_html = f'<div style="margin: 20px 0; text-align: center;"><img src="data:image/png;base64,{chart_base64}" style="max-width: 100%; border-radius: 5px; border: 1px solid #ddd;" /></div>' if chart_base64 else ""
+
     # Generate HTML output with summary and detailed results
     html_output = f"""
-    <div style="padding: 20px; background-color: #f9f9f9; border-radius: 5px; max-width: 100%; overflow-x: auto;">
-        <h3 style="color: #111;">Batch Analysis Results ({num_runs_per_variation} runs per variation)</h3>
+    <div style="padding: 20px; background-color: #f9f9f9; border-radius: 5px; max-width: 100%; overflow-x: auto; color: #000;">
+        <h3 style="color: #000;">Batch Analysis Results ({num_runs_per_variation} runs per variation)</h3>
         
-        <div style="margin: 20px 0; padding: 15px; background-color: #e8f4f8; border-left: 4px solid #3498db; border-radius: 3px;">
-            <h4 style="margin-top: 0; color: #111;">Overall Summary</h4>
-            <p style="color: #111;"><strong>Total Variations:</strong> {len(batch_results)} (including baseline)</p>
-            <p style="color: #111;"><strong>Token Varied:</strong> "{batch_token}"</p>
-            <p style="color: #111;"><strong>Runs per Variation:</strong> {num_runs_per_variation}</p>
-            <p style="color: #111;"><strong>Total Inferences:</strong> {len(batch_results) * num_runs_per_variation}</p>
-            <p style="color: #111;"><strong style="color: #27ae60;">Positive Outcomes:</strong> {positive_count} ({positive_count/len(batch_results)*100:.1f}%)</p>
-            <p style="color: #111;"><strong style="color: #e74c3c;">Negative Outcomes:</strong> {negative_count} ({negative_count/len(batch_results)*100:.1f}%)</p>
-            <p style="color: #111;"><strong style="color: #95a5a6;">Neutral Outcomes:</strong> {neutral_count} ({neutral_count/len(batch_results)*100:.1f}%)</p>
+        {chart_html}
+        
+        <div style="margin: 20px 0; padding: 15px; background-color: #e8f4f8; border-left: 4px solid #3498db; border-radius: 3px; color: #000;">
+            <h4 style="margin-top: 0; color: #000;">Overall Summary</h4>
+            <p style="color: #000;"><strong>Total Variations:</strong> {len(batch_results)} (including baseline)</p>
+            <p style="color: #000;"><strong>Token Varied:</strong> "{batch_token}"</p>
+            <p style="color: #000;"><strong>Dimension:</strong> {dimension_to_vary}</p>
+            <p style="color: #000;"><strong>Runs per Variation:</strong> {num_runs_per_variation}</p>
+            <p style="color: #000;"><strong>Total Inferences:</strong> {len(batch_results) * num_runs_per_variation}</p>
+            <p style="color: #000;"><strong style="color: #27ae60;">Positive Outcomes:</strong> {positive_count} ({positive_count/len(batch_results)*100:.1f}%)</p>
+            <p style="color: #000;"><strong style="color: #e74c3c;">Negative Outcomes:</strong> {negative_count} ({negative_count/len(batch_results)*100:.1f}%)</p>
+            <p style="color: #000;"><strong style="color: #7f8c8d;">Neutral Outcomes:</strong> {neutral_count} ({neutral_count/len(batch_results)*100:.1f}%)</p>
         </div>
         
         <div style="margin: 20px 0;">
-            <h4 style="color: #111;">Original Resume (Baseline):</h4>
-            <div style="padding: 10px; background-color: #fff; border: 1px solid #ddd; border-radius: 3px;">
-                <p style="color: #111;"><strong>Token:</strong> {batch_token}</p>
-                <p style="color: #111;"><strong>Average Score:</strong> {batch_results[0]['avg_score']:.2f} (from {num_runs_per_variation} runs)</p>
-                <p style="color: #111;"><strong>Individual Scores:</strong> {', '.join(map(str, batch_results[0]['scores']))}</p>
-                <p style="color: #111;"><strong>Overall Classification:</strong> <span style="color: {'#27ae60' if batch_results[0]['sentiment'] == 'positive' else '#e74c3c' if batch_results[0]['sentiment'] == 'negative' else '#95a5a6'}; font-weight: bold;">{batch_results[0]['sentiment'].upper()}</span></p>
+            <h4 style="color: #000;">Original Resume (Baseline):</h4>
+            <div style="padding: 10px; background-color: #fff; border: 1px solid #ddd; border-radius: 3px; color: #000;">
+                <p style="color: #000;"><strong>Token:</strong> {batch_token}</p>
+                <p style="color: #000;"><strong>Average Score:</strong> {batch_results[0]['avg_score']:.2f} (from {num_runs_per_variation} runs)</p>
+                <p style="color: #000;"><strong>Individual Scores:</strong> {', '.join(map(str, batch_results[0]['scores']))}</p>
+                <p style="color: #000;"><strong>Overall Classification:</strong> <span style="color: {'#27ae60' if batch_results[0]['sentiment'] == 'positive' else '#e74c3c' if batch_results[0]['sentiment'] == 'negative' else '#7f8c8d'}; font-weight: bold;">{batch_results[0]['sentiment'].upper()}</span></p>
                 <details style="margin-top: 10px;">
                     <summary style="cursor: pointer; color: #3498db;">Show all {num_runs_per_variation} continuations</summary>
                     <ul style="margin-top: 5px;">
     """
     
     for i, run in enumerate(batch_results[0]['runs']):
-        score_color = '#27ae60' if batch_results[0]['scores'][i] == 1 else '#e74c3c' if batch_results[0]['scores'][i] == -1 else '#95a5a6'
+        score_color = '#27ae60' if batch_results[0]['scores'][i] == 1 else '#e74c3c' if batch_results[0]['scores'][i] == -1 else '#7f8c8d'
         html_output += f"""
-                        <li style="color: #111;">Run {i+1}: "{run['continuation']}" <span style="color: {score_color}; font-weight: bold;">({batch_results[0]['scores'][i]:+d})</span></li>
+                        <li style="color: #000;">Run {i+1}: "{run['continuation']}" <span style="color: {score_color}; font-weight: bold;">({batch_results[0]['scores'][i]:+d})</span></li>
         """
     
-    html_output += """
+    html_output += f"""
                     </ul>
                 </details>
             </div>
         </div>
         
-        <div style="margin: 20px 0; padding: 15px; background-color: #fff; border: 1px solid #ddd; border-radius: 3px; overflow-x: auto;">
-            <h4 style="color: #111;">Variations of "{batch_token}"</h4>
+        <div style="margin: 20px 0; padding: 15px; background-color: #fff; border: 1px solid #ddd; border-radius: 3px; overflow-x: auto; color: #000;">
+            <h4 style="color: #000;">Variations of "{batch_token}"</h4>
             
             <div style="overflow-x: auto; max-width: 100%;">
-                <table style="width: 100%; min-width: 600px; border-collapse: collapse; margin-top: 10px; table-layout: auto;">
+                <table style="width: 100%; min-width: 600px; border-collapse: collapse; margin-top: 10px; table-layout: auto; color: #000;">
                     <thead>
-                        <tr style="background-color: #ecf0f1;">
-                            <th style="padding: 8px; text-align: left; border: 1px solid #bdc3c7; color: #111; min-width: 120px;">Replacement</th>
-                            <th style="padding: 8px; text-align: center; border: 1px solid #bdc3c7; color: #111; min-width: 80px;">Avg Score</th>
-                            <th style="padding: 8px; text-align: center; border: 1px solid #bdc3c7; color: #111; min-width: 150px;">Individual Scores</th>
-                            <th style="padding: 8px; text-align: center; border: 1px solid #bdc3c7; color: #111; min-width: 100px;">Classification</th>
+                        <tr style="background-color: #ecf0f1; color: #000;">
+                            <th style="padding: 8px; text-align: left; border: 1px solid #bdc3c7; color: #000; min-width: 120px;">Replacement</th>
+                            <th style="padding: 8px; text-align: left; border: 1px solid #bdc3c7; color: #000; min-width: 100px;">Category</th>
+                            <th style="padding: 8px; text-align: center; border: 1px solid #bdc3c7; color: #000; min-width: 80px;">Avg Score</th>
+                            <th style="padding: 8px; text-align: center; border: 1px solid #bdc3c7; color: #000; min-width: 150px;">Individual Scores</th>
+                            <th style="padding: 8px; text-align: center; border: 1px solid #bdc3c7; color: #000; min-width: 100px;">Classification</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1547,12 +1632,12 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
     
     # Add each variation to the table (skip original at index 0)
     for result in batch_results[1:]:
-        sentiment_color = '#27ae60' if result['sentiment'] == 'positive' else '#e74c3c' if result['sentiment'] == 'negative' else '#95a5a6'
-        scores_display = ', '.join([f'<span style="color: {"#27ae60" if s == 1 else "#e74c3c" if s == -1 else "#95a5a6"};">{s:+d}</span>' for s in result['scores']])
+        sentiment_color = '#27ae60' if result['sentiment'] == 'positive' else '#e74c3c' if result['sentiment'] == 'negative' else '#7f8c8d'
+        scores_display = ', '.join([f'<span style="color: {"#27ae60" if s == 1 else "#e74c3c" if s == -1 else "#7f8c8d"};">{s:+d}</span>' for s in result['scores']])
         
         html_output += f"""
-                <tr>
-                    <td style="padding: 8px; border: 1px solid #bdc3c7; color: #111; word-wrap: break-word;">
+                <tr style="color: #000;">
+                    <td style="padding: 8px; border: 1px solid #bdc3c7; color: #000; word-wrap: break-word;">
                         <strong>{result['replacement']}</strong>
                         <details style="margin-top: 5px;">
                             <summary style="cursor: pointer; color: #3498db; font-size: 0.9em;">Show continuations</summary>
@@ -1560,22 +1645,25 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
         """
         
         for i, run in enumerate(result['runs']):
-            score_color = '#27ae60' if result['scores'][i] == 1 else '#e74c3c' if result['scores'][i] == -1 else '#95a5a6'
+            score_color = '#27ae60' if result['scores'][i] == 1 else '#e74c3c' if result['scores'][i] == -1 else '#7f8c8d'
             html_output += f"""
-                                <li style="color: #111;">"{run['continuation']}" <span style="color: {score_color};">({result['scores'][i]:+d})</span></li>
+                                <li style="color: #000;">"{run['continuation']}" <span style="color: {score_color};">({result['scores'][i]:+d})</span></li>
             """
         
         html_output += f"""
                             </ul>
                         </details>
                     </td>
-                    <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center; color: #111;">
+                    <td style="padding: 8px; border: 1px solid #bdc3c7; color: #000;">
+                        {result['category']}
+                    </td>
+                    <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center; color: #000;">
                         <strong>{result['avg_score']:.2f}</strong>
                     </td>
-                    <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center; color: #111;">
+                    <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center; color: #000;">
                         {scores_display}
                     </td>
-                    <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center;">
+                    <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center; color: #000;">
                         <span style="color: {sentiment_color}; font-weight: bold;">{result['sentiment'].upper()}</span>
                     </td>
                 </tr>
@@ -1589,7 +1677,7 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
     </div>
     """
     
-    model_display = f"**Model:** {lm_model_name} (Batch Mode - {len(variations)} variations)"
+    model_display = f"**Model:** {lm_model_name} (Batch Mode - {len(variations_with_cats)} variations)"
     
     # Return None for continuation and full_text since we're showing batch results
     return html_output, None, None, model_display

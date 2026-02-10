@@ -81,38 +81,30 @@ def _generate_continuation(text, model, tokenizer, max_new_tokens=10, temperatur
         full_text: Input + generated text
     """
 
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-    input_length = inputs['input_ids'].shape[1]
+    # Create a text-generation pipeline
+    generator = pipeline('text-generation', model=model, tokenizer=tokenizer)
+    
+    # Set random seed for this generation
+    seed = random.randint(0, 100000)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-    model.eval()
-    with torch.no_grad():
-        # Create a text-generation pipeline for each model
-            generator = pipeline('text-generation', model=lm_model_name)
+    # Generate text with the model
+    continuation = generator(
+        text,
+        max_new_tokens=max_new_tokens,
+        num_return_sequences=1,
+        truncation=True,
+        return_full_text=False,
+        temperature=temperature,
+        do_sample=True if temperature > 0 else False
+    )[0]['generated_text']
 
-            # Generate text with the model
-            continuation = generator(
-                text,
-                max_new_tokens=20,  # Limit generation to specified tokens
-                num_return_sequences=1,
-                truncation=True,
-                return_full_text=False
-            )[0]['generated_text']
-
-            # Check sanity
-            print(continuation)
-
-            # Extract the generated text
-            #generated_text = output[0]['generated_text']
+    # Check sanity
+    print(f"Generated continuation: {continuation}")
 
     full_text = text + continuation
-    # # Decode full output
-    # full_text = tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
-
-    # # Extract just the generated part
-    # continuation = tokenizer.decode(
-    #     outputs.sequences[0][input_length:],
-    #     skip_special_tokens=True
-    # )
 
     return continuation, full_text
 
@@ -133,7 +125,11 @@ def _get_integrated_gradients_with_noise_tunnel(text, model, tokenizer, target_t
     """
     # Tokenize input
     inputs = tokenizer(text, return_tensors="pt")
-    input_ids = inputs['input_ids'].to(model.device)
+    input_ids = inputs['input_ids']
+    
+    # Get model device
+    device = next(model.parameters()).device
+    input_ids = input_ids.to(device)
 
     # Get the embedding layer
     embedding_layer = None
@@ -737,7 +733,7 @@ def analyze_generation(
         normalized = (all_values - min_val) / (max_val - min_val)
 
     # Choose colormap
-    cmap = plt.cm.seismic
+    cmap = plt.cm.viridis
 
     # Generate highlights
     # IMPORTANT: Match against extended_input, not original text!
@@ -1217,7 +1213,8 @@ def highlight_text(text, highlights, outputs, title=""):
         for start, end, label, color in sorted_highlights:
             # Add unhighlighted text before this highlight
             if last_idx < start:
-                result.append(f'<span style="color: #000000;">{text[last_idx:start].replace("\n", "<br>")}</span>')
+                unhighlighted_text = text[last_idx:start].replace("\n", "<br>")
+                result.append(f'<span style="color: #000000;">{unhighlighted_text}</span>')
 
             # Add highlighted text with dark text for better visibility
             highlighted_span = f'<mark style="background-color: {color}; color: #000000; padding: 2px 4px; border-radius: 3px;" title="{label}">{text[start:end]}</mark>'
@@ -1226,7 +1223,8 @@ def highlight_text(text, highlights, outputs, title=""):
 
         # Add remaining unhighlighted text
         if last_idx < len(text):
-            result.append(f'<span style="color: #000000;">{text[last_idx:].replace("\n", "<br>")}</span>')
+            remaining_text = text[last_idx:].replace("\n", "<br>")
+            result.append(f'<span style="color: #000000;">{remaining_text}</span>')
 
         content = ''.join(result)
 
@@ -1292,6 +1290,413 @@ def process_resume(text, method, temperature):
     # Display the model and the output only in the first box for now...
     return html_output, continuation, full_text, model_display
 
+
+import random
+
+def generate_synthetic_variations(custom_prompt, num_variations=5, temperature=0.9):
+    """
+    Use the currently loaded LLM to generate synthetic variations using a custom prompt.
+    ...
+    """
+    global _model, _tokenizer, lm_model_name
+    
+    # Ensure model is initialized
+    if _model is None or _tokenizer is None:
+        _initialize_model(lm_model_name)
+    
+    # Set a random seed to ensure diversity
+    seed = random.randint(0, 100000)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    print(f"DEBUG: Using random seed {seed} for synthetic generation")
+    
+    print(f"Generating synthetic data using loaded model: {lm_model_name}...")
+    
+    # Update the prompt to request the exact number of variations
+    if "{num}" in custom_prompt or "{num_variations}" in custom_prompt:
+        formatted_prompt = custom_prompt.replace("{num}", str(num_variations)).replace("{num_variations}", str(num_variations))
+    else:
+        # Just use the prompt as is, maybe append a newline if needed
+        formatted_prompt = f"{custom_prompt}\n"
+    
+    # Generate variations using the loaded model
+    # Note: Base models like GPT-Neo might need diverse prompting strategies compared to Instruct models
+    # Use a completion-style prompt for base models
+    if "instruct" not in lm_model_name.lower():
+        # Clean up prompt to extract just the item name
+        item_name = custom_prompt.lower().replace('generate', '').replace('list of', '').strip()
+        formatted_prompt = f"List of {num_variations} {item_name}:\n1."
+    else:
+        formatted_prompt = f"{custom_prompt}\nOutput format: 1. Item\n2. Item\n..."
+        
+    print(f"DEBUG: Synthetic generation prompt: {formatted_prompt}")
+
+    inputs = _tokenizer(formatted_prompt, return_tensors="pt").to(next(_model.parameters()).device)
+
+    with torch.no_grad():
+        outputs = _model.generate(
+            **inputs,
+            max_new_tokens=256,
+            temperature=temperature, # Use user-specified temperature
+            top_p=0.95,
+            repetition_penalty=1.2, # Discourage repetition
+            do_sample=True,
+            pad_token_id=_tokenizer.eos_token_id
+        )
+    
+    # Decode the output
+    generated_text = _tokenizer.decode(outputs[0], skip_special_tokens=True)
+    
+    # Extract just the generated part (remove the prompt)
+    if generated_text.startswith(formatted_prompt):
+        response = generated_text[len(formatted_prompt):]
+    elif formatted_prompt.strip() in generated_text:
+         response = generated_text.split(formatted_prompt.strip())[-1]
+    else:
+        # Fallback if specific decoding issues
+        response = generated_text
+        
+    print(f"DEBUG: Raw generated response: {response[:200]}...")
+    
+    # Parse the response to extract variations
+    variations = parse_llm_response(response, num_variations)
+    
+    print(f"DEBUG: Parsed variations: {variations}")
+    return variations
+
+
+def parse_llm_response(response, expected_count):
+    """
+    Parse the LLM response to extract a clean list of variations.
+    
+    Args:
+        response: Raw LLM response
+        expected_count: Expected number of variations
+    
+    Returns:
+        List of variation strings
+    """
+    # Remove common prefixes/suffixes
+    response = response.strip()
+    
+    # Remove markdown formatting if present
+    response = response.replace('```', '').strip()
+    
+    # Strategy 1: Split by comma
+    comma_variations = [v.strip() for v in response.split(',')]
+    
+    # Strategy 2: Split by newline
+    newline_variations = [v.strip() for v in response.split('\n') if v.strip()]
+    
+    # Choose the strategy that yields more items (closer to usually expected count > 1)
+    if len(newline_variations) > len(comma_variations) and len(newline_variations) > 1:
+        variations = newline_variations
+    else:
+        variations = comma_variations
+    
+    # Remove numbering if present (e.g., "1. Harvard" -> "Harvard")
+    # Improved regex-like removal without regex module
+    cleaned_variations = []
+    for v in variations:
+        v_clean = v.strip()
+        # Remove "1. ", "2) ", "- " prefix styles
+        if len(v_clean) > 0 and v_clean[0].isdigit():
+            # Find first non-digit/non-dot/non-paren/non-space
+            for i, char in enumerate(v_clean):
+                if not (char.isdigit() or char in ['.', ')', ' ']):
+                     v_clean = v_clean[i:]
+                     break
+        elif v_clean.startswith('- ') or v_clean.startswith('* '):
+             v_clean = v_clean[2:]
+        
+        cleaned_variations.append(v_clean)
+    
+    variations = cleaned_variations
+    
+    # Remove quotes if present
+    variations = [v.strip('"').strip("'") for v in variations]
+    
+    # Remove any parenthetical explanations (e.g., "Harvard (US)" -> "Harvard")
+    variations = [v.split('(')[0].strip() if '(' in v else v for v in variations]
+    
+    # Filter out empty strings, very long strings, and very short strings
+    variations = [v for v in variations if v and 2 <= len(v) <= 100]
+    
+    # Filter out common non-data keywords (only if they constitute the entire item essentially, or very clearly not data)
+    # Be careful not to filter out valid data containing these words
+    # A blacklist of exact phrases or very strong signals
+    blacklist_starts = ["here is", "sure,", "generated", "list of", "variations:"]
+    variations = [v for v in variations if not any(v.lower().startswith(s) for s in blacklist_starts)]
+
+    # If we still have no valid variations, return a more descriptive fallback
+    if len(variations) == 0:
+        print(f"Warning: Could not parse LLM response. Raw response: {response[:200]}")
+        return [f"ModelGenerationFailed_{i}" for i in range(1, expected_count + 1)]
+    
+    # Return only the requested number (or fewer if we couldn't parse enough)
+    return variations[:expected_count]
+
+
+def process_batch_resume(text, method, temperature, batch_token, custom_prompt, num_variations):
+    """
+    Process multiple resume variations by replacing a specified token with LLM-generated alternatives.
+    
+    Args:
+        text: Original resume text
+        method: Explanation method (not used in batch mode currently)
+        temperature: Model temperature for generation
+        batch_token: Single token to vary (e.g., "Stanford", "John", "Python")
+        custom_prompt: User-provided prompt for generating variations
+        num_variations: Number of variations to generate
+    
+    Returns:
+        html_output: HTML displaying batch results
+        continuation: Not used in batch mode (returns None)
+        full_text: Not used in batch mode (returns None)
+        model_display: Model name display string
+    """
+    if not text.strip():
+        return "<p>Enter some text to analyze...</p>", None, None, ""
+    
+    if not batch_token or not batch_token.strip():
+        return "<p>Please specify a token to vary for batch analysis...</p>", None, None, ""
+    
+    if not custom_prompt or not custom_prompt.strip():
+        return "<p>Please provide a prompt for generating variations...</p>", None, None, ""
+    
+    # Import necessary components (assuming these are available in resume_utility)
+    # You'll need to expose these or import them appropriately
+    global _model, _tokenizer, lm_model_name
+    if _model is None or _tokenizer is None:
+        _initialize_model(lm_model_name)
+    
+    # Generate variations using LLM with custom prompt
+    print(f"Generating {num_variations} variations for token: {batch_token}")
+    print(f"Using prompt: {custom_prompt[:100]}...")
+    
+    variations = generate_synthetic_variations(custom_prompt, num_variations=num_variations, temperature=temperature)
+    print(f"Generated {len(variations)} variations: {variations}")  
+    
+    # IMPORTANT: Reduce number of runs to avoid timeout
+    # For large batches (>20 variations), use fewer runs per variation
+    if num_variations > 20:
+        num_runs_per_variation = 3  # Reduce to 3 runs for large batches
+        print(f"Large batch detected ({num_variations} variations). Using {num_runs_per_variation} runs per variation to avoid timeout.")
+    else:
+        num_runs_per_variation = 5  # Use 5 runs for smaller batches
+    
+    # Generate variations
+    batch_results = []
+    
+    # Define keywords for classification
+    positive_keywords = ['yes', 'qualified', 'strong', 'excellent', 'hire', 'accept', 'approved', 'recommend']
+    negative_keywords = ['no', 'unqualified', 'weak', 'reject', 'deny', 'decline', 'not', 'unfortunately']
+    
+    def classify_continuation(continuation):
+        """Helper function to classify a single continuation."""
+        continuation_lower = continuation.lower()
+        if any(keyword in continuation_lower for keyword in positive_keywords):
+            return 1
+        elif any(keyword in continuation_lower for keyword in negative_keywords):
+            return -1
+        else:
+            return 0
+    
+    # First, add the original text as baseline (with multiple runs)
+    print(f"Running baseline (original) analysis for token: '{batch_token}'")
+    original_runs = []
+    original_scores = []
+    
+    for run_idx in range(num_runs_per_variation):
+        continuation, full_text = _generate_continuation(
+            text, _model, _tokenizer,
+            max_new_tokens=10,
+            temperature=temperature
+        )
+        print(f"  Baseline Run {run_idx+1}: {continuation.strip()}")
+        original_runs.append({
+            'continuation': continuation,
+            'full_text': full_text
+        })
+        original_scores.append(classify_continuation(continuation))
+    
+    original_avg_score = sum(original_scores) / len(original_scores)
+    original_overall_sentiment = 'positive' if original_avg_score > 0 else 'negative' if original_avg_score < 0 else 'neutral'
+    
+    batch_results.append({
+        'variation': 'Original',
+        'token': batch_token,
+        'replacement': batch_token,
+        'runs': original_runs,
+        'scores': original_scores,
+        'avg_score': original_avg_score,
+        'sentiment': original_overall_sentiment,
+        'continuation': original_runs[0]['continuation']  # For display purposes
+    })
+    
+    # Process variations in batches to avoid timeout
+    print(f"Processing {len(variations)} variations with {num_runs_per_variation} runs each...")
+    total_inferences = len(variations) * num_runs_per_variation
+    print(f"Total inferences to run: {total_inferences}")
+    
+    for var_idx, replacement in enumerate(variations):
+        if var_idx % 10 == 0:
+            print(f"  Progress: {var_idx}/{len(variations)} variations complete")
+        
+        # Create varied text by replacing the token
+        varied_text = text.replace(batch_token, replacement)
+        
+        # VERIFICATION: Print verify the replacement worked
+        if var_idx < 3: # Print first 3 to avoid spam
+            snippet_start = max(0, text.find(batch_token) - 20)
+            snippet_end = min(len(text), text.find(batch_token) + len(batch_token) + 20)
+            print(f"DEBUG: Variation {var_idx+1} '{replacement}'")
+            print(f"  Input text snippet (before): ...{text[snippet_start:snippet_end]}...")
+            print(f"  Input text snippet (after):  ...{varied_text[snippet_start:snippet_end + len(replacement) - len(batch_token)]}...")
+        
+        # Run multiple times and collect results
+        variation_runs = []
+        variation_scores = []
+        
+        for run_idx in range(num_runs_per_variation):
+            continuation, full_text = _generate_continuation(
+                varied_text, _model, _tokenizer,
+                max_new_tokens=10,
+                temperature=temperature
+            )
+            variation_runs.append({
+                'continuation': continuation,
+                'full_text': full_text
+            })
+            variation_scores.append(classify_continuation(continuation))
+        
+        # Calculate average score and overall sentiment
+        avg_score = sum(variation_scores) / len(variation_scores)
+        overall_sentiment = 'positive' if avg_score > 0 else 'negative' if avg_score < 0 else 'neutral'
+        
+        batch_results.append({
+            'variation': f'{batch_token} → {replacement}',
+            'token': batch_token,
+            'replacement': replacement,
+            'runs': variation_runs,
+            'scores': variation_scores,
+            'avg_score': avg_score,
+            'sentiment': overall_sentiment,
+            'continuation': variation_runs[0]['continuation']  # For display purposes
+        })
+    
+    print(f"All {len(variations)} variations processed successfully!")
+    
+    # Count overall sentiments
+    positive_count = sum(1 for r in batch_results if r['sentiment'] == 'positive')
+    negative_count = sum(1 for r in batch_results if r['sentiment'] == 'negative')
+    neutral_count = sum(1 for r in batch_results if r['sentiment'] == 'neutral')
+    
+    # Generate HTML output with summary and detailed results
+    html_output = f"""
+    <div style="padding: 20px; background-color: #f9f9f9; border-radius: 5px; max-width: 100%; overflow-x: auto;">
+        <h3 style="color: #111;">Batch Analysis Results ({num_runs_per_variation} runs per variation)</h3>
+        
+        <div style="margin: 20px 0; padding: 15px; background-color: #e8f4f8; border-left: 4px solid #3498db; border-radius: 3px;">
+            <h4 style="margin-top: 0; color: #111;">Overall Summary</h4>
+            <p style="color: #111;"><strong>Total Variations:</strong> {len(batch_results)} (including baseline)</p>
+            <p style="color: #111;"><strong>Token Varied:</strong> "{batch_token}"</p>
+            <p style="color: #111;"><strong>Runs per Variation:</strong> {num_runs_per_variation}</p>
+            <p style="color: #111;"><strong>Total Inferences:</strong> {len(batch_results) * num_runs_per_variation}</p>
+            <p style="color: #111;"><strong style="color: #27ae60;">Positive Outcomes:</strong> {positive_count} ({positive_count/len(batch_results)*100:.1f}%)</p>
+            <p style="color: #111;"><strong style="color: #e74c3c;">Negative Outcomes:</strong> {negative_count} ({negative_count/len(batch_results)*100:.1f}%)</p>
+            <p style="color: #111;"><strong style="color: #95a5a6;">Neutral Outcomes:</strong> {neutral_count} ({neutral_count/len(batch_results)*100:.1f}%)</p>
+        </div>
+        
+        <div style="margin: 20px 0;">
+            <h4 style="color: #111;">Original Resume (Baseline):</h4>
+            <div style="padding: 10px; background-color: #fff; border: 1px solid #ddd; border-radius: 3px;">
+                <p style="color: #111;"><strong>Token:</strong> {batch_token}</p>
+                <p style="color: #111;"><strong>Average Score:</strong> {batch_results[0]['avg_score']:.2f} (from {num_runs_per_variation} runs)</p>
+                <p style="color: #111;"><strong>Individual Scores:</strong> {', '.join(map(str, batch_results[0]['scores']))}</p>
+                <p style="color: #111;"><strong>Overall Classification:</strong> <span style="color: {'#27ae60' if batch_results[0]['sentiment'] == 'positive' else '#e74c3c' if batch_results[0]['sentiment'] == 'negative' else '#95a5a6'}; font-weight: bold;">{batch_results[0]['sentiment'].upper()}</span></p>
+                <details style="margin-top: 10px;">
+                    <summary style="cursor: pointer; color: #3498db;">Show all {num_runs_per_variation} continuations</summary>
+                    <ul style="margin-top: 5px;">
+    """
+    
+    for i, run in enumerate(batch_results[0]['runs']):
+        score_color = '#27ae60' if batch_results[0]['scores'][i] == 1 else '#e74c3c' if batch_results[0]['scores'][i] == -1 else '#95a5a6'
+        html_output += f"""
+                        <li style="color: #111;">Run {i+1}: "{run['continuation']}" <span style="color: {score_color}; font-weight: bold;">({batch_results[0]['scores'][i]:+d})</span></li>
+        """
+    
+    html_output += """
+                    </ul>
+                </details>
+            </div>
+        </div>
+        
+        <div style="margin: 20px 0; padding: 15px; background-color: #fff; border: 1px solid #ddd; border-radius: 3px; overflow-x: auto;">
+            <h4 style="color: #111;">Variations of "{batch_token}"</h4>
+            
+            <div style="overflow-x: auto; max-width: 100%;">
+                <table style="width: 100%; min-width: 600px; border-collapse: collapse; margin-top: 10px; table-layout: auto;">
+                    <thead>
+                        <tr style="background-color: #ecf0f1;">
+                            <th style="padding: 8px; text-align: left; border: 1px solid #bdc3c7; color: #111; min-width: 120px;">Replacement</th>
+                            <th style="padding: 8px; text-align: center; border: 1px solid #bdc3c7; color: #111; min-width: 80px;">Avg Score</th>
+                            <th style="padding: 8px; text-align: center; border: 1px solid #bdc3c7; color: #111; min-width: 150px;">Individual Scores</th>
+                            <th style="padding: 8px; text-align: center; border: 1px solid #bdc3c7; color: #111; min-width: 100px;">Classification</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+    """
+    
+    # Add each variation to the table (skip original at index 0)
+    for result in batch_results[1:]:
+        sentiment_color = '#27ae60' if result['sentiment'] == 'positive' else '#e74c3c' if result['sentiment'] == 'negative' else '#95a5a6'
+        scores_display = ', '.join([f'<span style="color: {"#27ae60" if s == 1 else "#e74c3c" if s == -1 else "#95a5a6"};">{s:+d}</span>' for s in result['scores']])
+        
+        html_output += f"""
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #bdc3c7; color: #111; word-wrap: break-word;">
+                        <strong>{result['replacement']}</strong>
+                        <details style="margin-top: 5px;">
+                            <summary style="cursor: pointer; color: #3498db; font-size: 0.9em;">Show continuations</summary>
+                            <ul style="margin-top: 5px; font-size: 0.9em;">
+        """
+        
+        for i, run in enumerate(result['runs']):
+            score_color = '#27ae60' if result['scores'][i] == 1 else '#e74c3c' if result['scores'][i] == -1 else '#95a5a6'
+            html_output += f"""
+                                <li style="color: #111;">"{run['continuation']}" <span style="color: {score_color};">({result['scores'][i]:+d})</span></li>
+            """
+        
+        html_output += f"""
+                            </ul>
+                        </details>
+                    </td>
+                    <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center; color: #111;">
+                        <strong>{result['avg_score']:.2f}</strong>
+                    </td>
+                    <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center; color: #111;">
+                        {scores_display}
+                    </td>
+                    <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center;">
+                        <span style="color: {sentiment_color}; font-weight: bold;">{result['sentiment'].upper()}</span>
+                    </td>
+                </tr>
+        """
+    
+    html_output += """
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    """
+    
+    model_display = f"**Model:** {lm_model_name} (Batch Mode - {len(variations)} variations)"
+    
+    # Return None for continuation and full_text since we're showing batch results
+    return html_output, None, None, model_display
 
 # TODO: in the interp version, have the user select a target token from the above output, which triggers explain_resume
 def explain_resume(text, continuation, full_text, method):

@@ -10,6 +10,7 @@ import io
 from resume_utility import (
     sample_corpus, 
     process_resume,
+    process_batch_resume,
     explain_resume,
     reset_resume_text, 
     save_resume_version, 
@@ -41,44 +42,122 @@ from credit_utility import (
 )
 
 
-### Hoverable legend for interp colorscale...
-def create_hoverable_legend(min_val=0, max_val=100, label="Value"):
-    return f"""
-    <div style="margin: 20px 0; font-family: sans-serif;">
-        <div style="font-weight: bold; margin-bottom: 8px;">{label}</div>
-        <div style="position: relative;">
-            <div
-                onmousemove="
-                    const rect = this.getBoundingClientRect();
-                    const x = event.clientX - rect.left;
-                    const percent = x / rect.width;
-                    const value = ({min_val} + ({max_val} - {min_val}) * percent).toFixed(1);
-                    document.getElementById('valueText').textContent = 'Value: ' + value;
-                "
-                onmouseleave="document.getElementById('valueText').textContent = 'Hover to see value';"
-                style="
-                    height: 30px;
-                    background: linear-gradient(to right, blue, cyan, yellow, red);
-                    border: 1px solid #ccc;
-                    border-radius: 4px;
-                    cursor: crosshair;
-            "></div>
-            <div id="valueText" style="margin-top: 8px; font-size: 14px; color: #999;">
-                Hover to see value
-            </div>
-            <div style="display: flex; justify-content: space-between; margin-top: 5px; font-size: 12px; color: #666;">
-                <span>{min_val}</span>
-                <span>{(min_val + max_val) / 2}</span>
-                <span>{max_val}</span>
-            </div>
-        </div>
-    </div>
+# NEW: Function to split sample_corpus into three parts
+def split_resume_corpus(corpus_text):
     """
+    Split the sample corpus into lead prompt, main body, and end prompt.
+    This is a heuristic split - adjust the logic based on your actual corpus structure.
+    """
+    lines = corpus_text.strip().split('\n')
+    
+    # Example heuristic: 
+    # - Lead prompt: first 2 lines (or lines before "Education:" or similar section headers)
+    # - Main body: middle section with actual resume content
+    # - End prompt: last line or two (instructions to model)
+    
+    # Simple approach: split by looking for key markers
+    # Adjust these indices/logic based on your actual sample_corpus structure
+    
+    # For now, using a simple split:
+    # Lead: first 10% of lines
+    # Body: middle 80% of lines
+    # End: last 10% of lines
+    
+    total_lines = len(lines)
+    lead_end = max(1, total_lines // 10)
+    body_start = lead_end
+    body_end = total_lines - max(1, total_lines // 10)
+    
+    lead_prompt = '\n'.join(lines[:lead_end])
+    main_body = '\n'.join(lines[body_start:body_end])
+    end_prompt = '\n'.join(lines[body_end:])
+    
+    return lead_prompt, main_body, end_prompt
+
+
+# NEW: Function to combine the three parts back into full text
+def combine_resume_parts(lead, body, end):
+    """Combine the three parts back into a single resume text."""
+    parts = []
+    if lead.strip():
+        parts.append(lead.strip())
+    if body.strip():
+        parts.append(body.strip())
+    if end.strip():
+        parts.append(end.strip())
+    return '\n'.join(parts)
+
+
+# NEW: Functions to revert individual sections
+def revert_lead_prompt():
+    """Revert lead prompt to original."""
+    lead, _, _ = split_resume_corpus(sample_corpus)
+    return lead
+
+def revert_main_body():
+    """Revert main body to original."""
+    _, body, _ = split_resume_corpus(sample_corpus)
+    return body
+
+def revert_end_prompt():
+    """Revert end prompt to original."""
+    _, _, end = split_resume_corpus(sample_corpus)
+    return end
+
+
+# NEW: Modified process_resume wrapper to handle three inputs and batch analysis
+def process_resume_split(lead, body, end, method, temp, batch_enabled, batch_token, batch_prompt, batch_num_vars):
+    """Process resume from three separate text inputs, with optional batch analysis."""
+    full_text = combine_resume_parts(lead, body, end)
+    
+    if batch_enabled and batch_token and batch_prompt:
+        # Call batch processing function with custom prompt
+        return process_batch_resume(full_text, method, temp, batch_token, batch_prompt, batch_num_vars)
+    else:
+        # Call regular processing function
+        return process_resume(full_text, method, temp)
+
+
+# NEW: Modified explain_resume wrapper to handle three inputs
+def explain_resume_split(lead, body, end, continuation_state, fulltext_state, method):
+    """Explain resume from three separate text inputs."""
+    full_text = combine_resume_parts(lead, body, end)
+    return explain_resume(full_text, continuation_state, fulltext_state, method)
+
+
+def create_legend():
+    fig, ax = plt.subplots(figsize=(8, 1.5))
+    
+    # Create colorbar
+    cmap = plt.cm.viridis
+    norm = plt.Normalize(vmin=0, vmax=1)
+    
+    # Create colorbar
+    cb = plt.colorbar(
+        plt.cm.ScalarMappable(norm=norm, cmap=cmap),
+        cax=ax,
+        orientation='horizontal'
+    )
+    
+    # Set labels
+    cb.set_label('Importance', fontsize=12)
+    cb.ax.set_xticks([0, 1])
+    cb.ax.set_xticklabels(['Less Important', 'More Important'])
+    
+    plt.tight_layout()
+    return fig
+
+
+# Initialize the split parts from sample_corpus
+initial_lead, initial_body, initial_end = split_resume_corpus(sample_corpus)
+
 
 # Cell 5: Create the Gradio Interface
 with gr.Blocks(title="Test Auditing Interface") as demo:
     gr.Markdown("# Prototype Auditing Interface")
     gr.Markdown("The following interface is meant to be used for gray-box auditing with access to an explanation. Each tab represents a different type of functionality (resume screening, image captioning, and credit risk) for which you can try out multiple models and interpretability methods.")
+    gr.Markdown("# Instructions")
+    gr.Markdown("To assess the model, edit the input on the left side and press 'Analyze' to see the output. In the middle column, if applicable, use the 'Explain' feature to see likely attributions. Then press 'Save Current Version' to enable comparison between inputs or models on the right column.")
 
     with gr.Tabs():
 
@@ -99,25 +178,97 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                 resume_model_status = gr.Markdown("")
     
             with gr.Row():
-                # Left column - Text editor
+                # Left column - Text editor (NOW WITH THREE SECTIONS)
                 with gr.Column(scale=1):
                     gr.Markdown("### Modify Input Resume")
-                    resume_text_input = gr.Textbox(
-                        value=sample_corpus,
-                        lines=15,
-                        label="Edit Resume to Assess",
-                        placeholder="Paste or type your text here..."
+                    
+                    # Lead Prompt Section
+                    gr.Markdown("#### Lead Prompt (scaffolding before resume)")
+                    resume_lead_input = gr.Textbox(
+                        value=initial_lead,
+                        lines=3,
+                        label="Lead Prompt",
+                        placeholder="Leading instructions or context..."
                     )
-                    resume_method_dropdown = gr.Dropdown(
-                        choices=["integrated_gradients", "layer_integrated_gradients", "shap"],
-                        value="integrated_gradients",
-                        label="Explanation Method",
-                        interactive=False
+                    with gr.Row():
+                        revert_lead_btn = gr.Button("⟲ Revert Lead", variant="secondary", size="sm")
+                    
+                    # Main Body Section
+                    gr.Markdown("#### Main Resume Body")
+                    resume_body_input = gr.Textbox(
+                        value=initial_body,
+                        lines=8,
+                        label="Resume Content",
+                        placeholder="Main resume content..."
                     )
-                    temperature_slider = gr.Slider(minimum=0, maximum=1, value=0.1, step=0.01, label="Model Temperature")                    
+                    with gr.Row():
+                        revert_body_btn = gr.Button("⟲ Revert Body", variant="secondary", size="sm")
+                    
+                    # End Prompt Section
+                    gr.Markdown("#### End Prompt (scaffolding after resume)")
+                    resume_end_input = gr.Textbox(
+                        value=initial_end,
+                        lines=3,
+                        label="End Prompt",
+                        placeholder="Closing instructions..."
+                    )
+                    with gr.Row():
+                        revert_end_btn = gr.Button("⟲ Revert End", variant="secondary", size="sm")
+                    
+                    temperature_slider = gr.Slider(minimum=0, maximum=1, value=0.05, step=0.01, label="Model Temperature")
+                    
+                    # Batch Analysis Section
+                    gr.Markdown("#### Batch Analysis")
+                    batch_analysis_toggle = gr.Checkbox(
+                        label="Enable Batch Analysis",
+                        value=False,
+                        info="Run analysis with LLM-generated variations"
+                    )
+                    
+                    # Token to vary
+                    batch_token_input = gr.Textbox(
+                        label="Token to Vary",
+                        placeholder="e.g., Stanford, John, Python",
+                        visible=False,
+                        info="Enter the token from your resume that you want to vary"
+                    )
+                    
+                    # Editable prompt for LLM
+                    batch_prompt_input = gr.Textbox(
+                        label="Synthetic Data Generation Prompt",
+                        placeholder="Edit this prompt to control what variations are generated...",
+                        lines=8,
+                        visible=False,
+                        value="""Generate 25 common male first names followed by 25 common female first names, all from diverse cultural backgrounds. Include names representing:
+- American/Anglo names (e.g., Michael, Sarah)
+- African American names (e.g., Jamal, Latoya)
+- Hispanic/Latino names (e.g., Carlos, Maria)
+- East Asian names (e.g., Wei, Mei)
+- South Asian names (e.g., Arjun, Priya)
+- Middle Eastern names (e.g., Ahmed, Fatima)
+- European names (e.g., Marco, Sophie)
+
+First list all 25 male names, then all 25 female names.
+
+Provide ONLY a comma-separated list of 50 actual first names. No explanations, no numbering, no markdown formatting, no gender labels.
+
+Example format: Michael, Jamal, Carlos, Wei, Arjun, Ahmed, Marco, ..., Sarah, Latoya, Maria, Mei, Priya, Fatima, Sophie, ...""",
+                        info="Customize this prompt to generate the exact variations you want. Be specific about what you want generated."
+                    )
+                    
+                    batch_num_variations = gr.Slider(
+                        minimum=3,
+                        maximum=100,
+                        value=20,
+                        step=1,
+                        label="Number of Variations",
+                        visible=False,
+                        info="How many variations to test. Note: >20 variations uses 3 runs each, ≤20 uses 5 runs each (to avoid timeout)"
+                    )
+                    
                     with gr.Row():
                         resume_analyze_btn = gr.Button("Analyze", variant="primary")
-                        resume_reset_btn = gr.Button("Revert to Original", variant="secondary")
+                        resume_reset_all_btn = gr.Button("Revert All to Original", variant="secondary")
 
                 # Middle column - Current analysis
                 with gr.Column(scale=1):
@@ -128,9 +279,13 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         label="Model Output",
                         value="<p>Click 'Analyze' to see results...</p>"
                     )
-                    # TODO: Swap pure html output for clickable token
-                    # TODO: add token selection to explanation input.. 
-                    resume_explain_btn = gr.Button("Explain", variant='primary', interactive=True)
+                    resume_method_dropdown = gr.Dropdown(
+                        choices=["integrated_gradients", "layer_integrated_gradients", "shap"],
+                        value="integrated_gradients",
+                        label="Explanation Method",
+                        interactive=False
+                    )
+                    resume_explain_btn = gr.Button("Explain", variant='primary', interactive=False)
                     explanation_html = gr.HTML(
                         label="Explanation",
                         value="<p>No explanation generated. Click 'Explain' to see results...</p>"
@@ -153,29 +308,85 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         value="<p>No comparison loaded. Save a version and select it from the dropdown to compare.</p>"
                     )
 
-            # MODIFIED: Added resume_current_model_display to outputs
+            # Event Handlers
+            
+            # Batch analysis toggle handler
+            def toggle_batch_inputs(enabled):
+                return (
+                    gr.update(visible=enabled),  # batch_token_input
+                    gr.update(visible=enabled),  # batch_prompt_input
+                    gr.update(visible=enabled)   # batch_num_variations
+                )
+            
+            batch_analysis_toggle.change(
+                fn=toggle_batch_inputs,
+                inputs=batch_analysis_toggle,
+                outputs=[batch_token_input, batch_prompt_input, batch_num_variations]
+            )
+            
+            # Individual revert buttons
+            revert_lead_btn.click(
+                fn=revert_lead_prompt,
+                inputs=None,
+                outputs=resume_lead_input
+            )
+            
+            revert_body_btn.click(
+                fn=revert_main_body,
+                inputs=None,
+                outputs=resume_body_input
+            )
+            
+            revert_end_btn.click(
+                fn=revert_end_prompt,
+                inputs=None,
+                outputs=resume_end_input
+            )
+            
+            # Revert all button
+            def revert_all():
+                lead, body, end = split_resume_corpus(sample_corpus)
+                return lead, body, end
+            
+            resume_reset_all_btn.click(
+                fn=revert_all,
+                inputs=None,
+                outputs=[resume_lead_input, resume_body_input, resume_end_input]
+            )
+            
+            # Analyze button with three inputs and batch analysis
             resume_analyze_btn.click(
-                fn=process_resume,
-                inputs=[resume_text_input, resume_method_dropdown, temperature_slider],
+                fn=process_resume_split,
+                inputs=[
+                    resume_lead_input, 
+                    resume_body_input, 
+                    resume_end_input, 
+                    resume_method_dropdown, 
+                    temperature_slider,
+                    batch_analysis_toggle,
+                    batch_token_input,
+                    batch_prompt_input,
+                    batch_num_variations
+                ],
                 outputs=[pure_html_output, continuation_state, fulltext_state, resume_current_model_display] 
             )
 
+            # Explain button with three inputs
             resume_explain_btn.click(
-                fn=explain_resume,
-                inputs=[resume_text_input, continuation_state, fulltext_state, resume_method_dropdown],
+                fn=explain_resume_split,
+                inputs=[resume_lead_input, resume_body_input, resume_end_input, continuation_state, fulltext_state, resume_method_dropdown],
                 outputs=[explanation_html]
             )
 
-            resume_reset_btn.click(
-                fn=reset_resume_text,
-                inputs=None,
-                outputs=resume_text_input
-            )
-
+            # Save version handler (modified to use combined text)
+            def save_version_split(lead, body, end, html_output):
+                full_text = combine_resume_parts(lead, body, end)
+                return save_resume_version(full_text, html_output)
+            
             resume_save_btn.click(
-                fn=save_resume_version,
-                inputs=[resume_text_input, pure_html_output, explanation_html, resume_method_dropdown],
-                outputs=[resume_version_dropdown, resume_save_status]
+                fn=save_version_split,
+                inputs=[resume_lead_input, resume_body_input, resume_end_input, pure_html_output],
+                outputs=[resume_save_status, resume_version_dropdown]
             )
 
             resume_version_dropdown.change(
@@ -187,27 +398,26 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
             resume_clear_btn.click(
                 fn=clear_resume_comparison,
                 inputs=None,
-                outputs=resume_comparison_output
+                outputs=[resume_comparison_output, resume_version_dropdown]
             )
 
-            # ADDED: Handle model selection changes
             resume_model_dropdown.change(
                 fn=switch_resume_model,
                 inputs=resume_model_dropdown,
                 outputs=[resume_model_status, resume_current_model_display]
             )
 
-        # Tab 2: Image Captioner
-        with gr.Tab("Image Captioner", interactive=False):
-            gr.Markdown("# Image Captioner with Interpretability")
-            gr.Markdown("Analyze image captioning models with multiple explanation methods and image sources.")
-
+        # Tab 2: Image Captioning
+        with gr.Tab("Image Captioning", interactive=False):
+            gr.Markdown("### Vision Model Interpretability")
+            gr.Markdown("Analyze how vision-language models generate image captions and which visual features they attend to.")
+            
             # ADDED: Model selection dropdown
             with gr.Row():
                 image_model_dropdown = gr.Dropdown(
                     choices=get_image_model_choices(),
                     value=get_image_model_choices()[0],
-                    label="Select Image Captioning Model",
+                    label="Select Vision Model",
                     interactive=True,
                     scale=3
                 )
@@ -215,93 +425,45 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
 
             with gr.Row():
                 with gr.Column(scale=1):
-                    gr.Markdown("### Image Selection")
+                    gr.Markdown("### Image Input")
                     image_source_dropdown = gr.Dropdown(
                         choices=get_sample_image_choices(),
-                        value="Sample 1",
-                        label="Select Image Source",
+                        value=get_sample_image_choices()[0],
+                        label="Select Sample Image",
                         interactive=True
                     )
-                    image_upload = gr.Image(
-                        label="Upload Custom Image (when 'Upload' is selected)",
-                        type="numpy",
-                        interactive=True
-                    )
-                    image_preview = gr.Image(
-                        value=test_img,
-                        label="Current Image",
-                        interactive=False
-                    )
-                    
-                    gr.Markdown("### Analysis Options")
+                    image_upload = gr.Image(type="pil", label="Or Upload Your Own Image")
                     analysis_method = gr.Radio(
                         choices=["Integrated Gradients", "GradCAM", "Multi-Image Comparison"],
                         value="Integrated Gradients",
                         label="Explanation Method"
                     )
                     num_tokens_slider = gr.Slider(
-                        minimum=1,
-                        maximum=5,
-                        value=3,
+                        minimum=1, 
+                        maximum=20, 
+                        value=5, 
                         step=1,
-                        label="Number of Tokens to Explain (IG only)",
-                        visible=True
+                        label="Number of tokens to explain (Integrated Gradients only)"
                     )
-                    
-                    with gr.Row():
-                        run_caption_btn = gr.Button("Generate Caption Only", variant="secondary")
-                        run_analysis_btn = gr.Button("Run Full Analysis", variant="primary")
+                    run_analysis_btn = gr.Button("Run Full Analysis", variant="primary")
 
                 with gr.Column(scale=2):
-                    gr.Markdown("### Results")
+                    gr.Markdown("### Analysis Results")
                     # ADDED: Show current model
                     image_current_model_display = gr.Markdown("**Model:** Loading...")
                     caption_output = gr.Textbox(label="Generated Caption", lines=2)
-                    viz_output = gr.Image(label="Visualization")
+                    viz_output = gr.Image(label="Visual Explanation", type="pil")
 
-            # Event handlers for image selection
-            def update_preview(choice, uploaded_img):
-                if choice == "Upload":
-                    if uploaded_img is not None:
-                        return Image.fromarray(uploaded_img.astype(np.uint8))
-                    return None
-                else:
-                    return get_sample_image_by_index(choice)
-            
+            # Sample image selection handler
+            def update_image_from_dropdown(choice):
+                idx = get_sample_image_choices().index(choice)
+                img = get_sample_image_by_index(idx)
+                return img
+
             image_source_dropdown.change(
-                fn=update_preview,
-                inputs=[image_source_dropdown, image_upload],
-                outputs=image_preview
-            )
-            
-            image_upload.change(
-                fn=update_preview,
-                inputs=[image_source_dropdown, image_upload],
-                outputs=image_preview
-            )
-
-            # Toggle num_tokens slider visibility
-            def toggle_slider(method):
-                return gr.update(visible=(method == "Integrated Gradients"))
-            
-            analysis_method.change(
-                fn=toggle_slider,
-                inputs=analysis_method,
-                outputs=num_tokens_slider
-            )
-
-            # ADDED: New wrapper function to include model display
-            def caption_with_model(uploaded_img, img_source):
-                caption = generate_caption_only(uploaded_img, img_source)
-                from image_utility import get_current_model_name
-                model_display = f"**Model:** {get_current_model_name()}"
-                return caption, model_display
-
-            # MODIFIED: Added model_display to outputs
-            run_caption_btn.click(
-                fn=caption_with_model,
-                inputs=[image_upload, image_source_dropdown],
-                outputs=[caption_output, image_current_model_display]  # ADDED 2nd output
+                fn=update_image_from_dropdown,
+                inputs=image_source_dropdown,
+                outputs=image_upload
             )
 
             # Full analysis button
@@ -321,7 +483,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
             run_analysis_btn.click(
                 fn=run_selected_analysis,
                 inputs=[image_upload, image_source_dropdown, analysis_method, num_tokens_slider],
-                outputs=[caption_output, viz_output]
+                outputs=[caption_output, viz_output, image_current_model_display]
             )
 
             # ADDED: Handle model changes

@@ -145,11 +145,14 @@ def load_sample_images(num_images=5):
 # Initialize and load first test image
 # -------------------------
 initialize_model()
-try:
-    sample_images = load_sample_images(num_images=5)
-    test_img = sample_images[0] if sample_images else None
-except Exception as e:
-    test_img = None
+# MODIFIED: Defer dataset loading until the image captioning tab is actually used
+# The tab is currently disabled, and the dataset URL is broken
+# try:
+#     sample_images = load_sample_images(num_images=5)
+#     test_img = sample_images[0] if sample_images else None
+# except Exception as e:
+#     test_img = None
+test_img = None  # Will be loaded lazily when needed
 
 # -------------------------
 # PREDICTION FUNCTIONS
@@ -177,6 +180,9 @@ def generate_caption_only(image, image_source):
             return "Please upload an image"
         pil_img = Image.fromarray(image.astype(np.uint8)).resize((224, 224)) if isinstance(image, np.ndarray) else image
     else:
+        # Lazy-load dataset if needed
+        if len(sample_images) == 0:
+            load_sample_images(num_images=5)
         # Extract index from "Sample 1", "Sample 2", etc.
         try:
             idx = int(image_source.split()[1]) - 1
@@ -207,6 +213,9 @@ def run_integrated_gradients(image, image_source, num_tokens=3):
         else:
             test_img_pil = image
     else:
+        # Lazy-load dataset if needed
+        if len(sample_images) == 0:
+            load_sample_images(num_images=5)
         # Use sample from dataset
         try:
             idx = int(image_source.split()[1]) - 1
@@ -310,6 +319,9 @@ def run_gradcam_analysis(image, image_source):
         else:
             test_img_pil = image
     else:
+        # Lazy-load dataset if needed
+        if len(sample_images) == 0:
+            load_sample_images(num_images=5)
         try:
             idx = int(image_source.split()[1]) - 1
             test_img_pil = sample_images[idx]
@@ -406,6 +418,9 @@ def run_lvlm_interpret(image, image_source, manipulation_type="mask"):
         else:
             test_img_pil = image
     else:
+        # Lazy-load dataset if needed
+        if len(sample_images) == 0:
+            load_sample_images(num_images=5)
         try:
             idx = int(image_source.split()[1]) - 1
             test_img_pil = sample_images[idx]
@@ -447,6 +462,10 @@ def compare_multiple_images(num_images=3):
     Compare captions and attributions across multiple sample images
     """
     initialize_model()
+    
+    # Lazy-load dataset if needed
+    if len(sample_images) == 0:
+        load_sample_images(num_images=5)
     
     images_to_compare = sample_images[:min(num_images, len(sample_images))]
     
@@ -515,6 +534,14 @@ def compare_multiple_images(num_images=3):
 # -------------------------
 def get_sample_image_choices():
     """Return list of sample image options for dropdown"""
+    # Lazy-load dataset if not already loaded
+    if len(sample_images) == 0:
+        try:
+            load_sample_images(num_images=5)
+        except Exception as e:
+            print(f"Warning: Could not load sample images: {e}")
+            return ["Upload"]  # Only allow uploads if dataset fails
+    
     num_samples = len(sample_images)
     return [f"Sample {i+1}" for i in range(num_samples)] + ["Upload"]
 
@@ -523,8 +550,16 @@ def get_sample_image_by_index(choice):
     if choice == "Upload":
         return None
     
+    # Lazy-load dataset if needed
+    if len(sample_images) == 0:
+        try:
+            load_sample_images(num_images=5)
+        except Exception as e:
+            print(f"Warning: Could not load sample images: {e}")
+            return None
+    
     try:
         idx = int(choice.split()[1]) - 1
         return sample_images[idx]
     except:
-        return sample_images[0]
+        return sample_images[0] if sample_images else None

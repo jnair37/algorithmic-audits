@@ -115,12 +115,12 @@ def process_resume_split(lead, body, end, method, temp, batch_enabled, batch_tok
         # Call batch processing function with Faker parameters
         # NEW: returns (html, batch_results, None, model_display)
         html, results, _, display = process_batch_resume(full_text, method, temp, batch_token, batch_num_vars, batch_dimension)
-        return html, results, None, None, display, gr.update(interactive=False), gr.update(visible=True, open=True), gr.update(maximum=len(results)-1)
+        return html, results, None, None, display, gr.update(visible=False), gr.update(visible=False), gr.update(visible=True, open=True), gr.update(maximum=len(results)-1)
     else:
         # Call regular processing function
         # returns (html, continuation, full_text, model_display)
         html, cont, full, display = process_resume(full_text, method, temp)
-        return html, [], cont, full, display, gr.update(interactive=True), gr.update(visible=False), gr.update(maximum=0)
+        return html, [], cont, full, display, gr.update(visible=True, interactive=True), gr.update(visible=True), gr.update(visible=False), gr.update(maximum=0)
 
 
 # NEW: Modified explain_resume wrapper to handle three inputs
@@ -282,10 +282,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         label="Explanation",
                         value="<p>No explanation generated. Click 'Explain' to see results...</p>"
                     )
-                    with gr.Row():
-                        resume_save_btn = gr.Button("Save Current Version", variant="primary")
-                    resume_save_status = gr.Markdown("")
-
+                    
                     # NEW: Batch Interpretation Carousel
                     with gr.Accordion("Batch Interpretation Carousel", open=False, visible=False) as batch_carousel_accordion:
                         gr.Markdown("### variation Explorer")
@@ -312,6 +309,10 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                             value="<p>Explanation will appear here...</p>"
                         )
 
+                    with gr.Row():
+                        resume_save_btn = gr.Button("Save Current Version", variant="primary")
+                    resume_save_status = gr.Markdown("")
+
                 # Right column - Saved version
                 with gr.Column(scale=1):
                     gr.Markdown("### Saved Version (Comparison)")
@@ -334,7 +335,8 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                     gr.update(visible=enabled),           # batch_token_input
                     gr.update(visible=enabled),           # batch_params_row
                     gr.update(visible=enabled),           # batch_num_variations
-                    gr.update(interactive=not enabled),   # resume_explain_btn
+                    gr.update(visible=not enabled),       # resume_explain_btn
+                    gr.update(visible=not enabled),       # explanation_html
                     gr.update(visible=enabled),           # batch_carousel_accordion
                     gr.update(maximum=num_vars)            # carousel_index_slider
                 )
@@ -344,7 +346,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                 inputs=[batch_analysis_toggle, batch_num_variations],
                 outputs=[
                     batch_token_input, batch_params_row, batch_num_variations,
-                    resume_explain_btn, batch_carousel_accordion, carousel_index_slider
+                    resume_explain_btn, explanation_html, batch_carousel_accordion, carousel_index_slider
                 ]
             )
             
@@ -394,7 +396,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                 ],
                 outputs=[
                     pure_html_output, batch_results_state, continuation_state, fulltext_state, 
-                    resume_current_model_display, resume_explain_btn, batch_carousel_accordion, carousel_index_slider
+                    resume_current_model_display, resume_explain_btn, explanation_html, batch_carousel_accordion, carousel_index_slider
                 ] 
             )
 
@@ -437,13 +439,30 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
             )
 
             # Save version handler (modified to use combined text)
-            def save_version_split(lead, body, end, html_output):
+            def save_version_split(lead, body, end, html_output, explanation_html, batch_enabled):
                 full_text = combine_resume_parts(lead, body, end)
-                return save_resume_version(full_text, html_output)
+                if batch_enabled:
+                    # Save batch results (charts and table)
+                    content = html_output
+                else:
+                    # Save continuation and explanation (if explanation exists and isn't just a placeholder)
+                    if "No explanation generated" in explanation_html:
+                        content = html_output
+                    else:
+                        content = html_output + "<hr>" + explanation_html
+                
+                return save_resume_version(full_text, content)
             
             resume_save_btn.click(
                 fn=save_version_split,
-                inputs=[resume_lead_input, resume_body_input, resume_end_input, pure_html_output],
+                inputs=[
+                    resume_lead_input, 
+                    resume_body_input, 
+                    resume_end_input, 
+                    pure_html_output, 
+                    explanation_html, 
+                    batch_analysis_toggle
+                ],
                 outputs=[resume_save_status, resume_version_dropdown]
             )
 

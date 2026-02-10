@@ -1609,24 +1609,24 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
         {chart_html}
         
         <div style="margin: 20px 0; padding: 15px; background-color: #e8f4f8; border-left: 4px solid #3498db; border-radius: 3px; color: #000;">
-            <h4 style="margin-top: 0; color: #000;">Overall Summary</h4>
-            <p style="color: #000;"><strong>Total Variations:</strong> {len(batch_results)} (including baseline)</p>
-            <p style="color: #000;"><strong>Token Varied:</strong> "{batch_token}"</p>
-            <p style="color: #000;"><strong>Dimension:</strong> {dimension_to_vary}</p>
-            <p style="color: #000;"><strong>Runs per Variation:</strong> {num_runs_per_variation}</p>
-            <p style="color: #000;"><strong>Total Inferences:</strong> {len(batch_results) * num_runs_per_variation}</p>
-            <p style="color: #000;"><strong style="color: #27ae60;">Positive Outcomes:</strong> {positive_count} ({positive_count/len(batch_results)*100:.1f}%)</p>
-            <p style="color: #000;"><strong style="color: #e74c3c;">Negative Outcomes:</strong> {negative_count} ({negative_count/len(batch_results)*100:.1f}%)</p>
-            <p style="color: #000;"><strong style="color: #7f8c8d;">Neutral Outcomes:</strong> {neutral_count} ({neutral_count/len(batch_results)*100:.1f}%)</p>
+            <h4 style="margin-top: 0; color: #000; font-weight: bold;">Overall Summary</h4>
+            <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Total Variations:</strong> {len(batch_results)} (including baseline)</p>
+            <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Token Varied:</strong> "{batch_token}"</p>
+            <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Dimension:</strong> {dimension_to_vary}</p>
+            <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Runs per Variation:</strong> {num_runs_per_variation}</p>
+            <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Total Inferences:</strong> {len(batch_results) * num_runs_per_variation}</p>
+            <p style="color: #000;"><strong style="color: #27ae60; font-weight: bold;">Positive Outcomes:</strong> {positive_count} ({positive_count/len(batch_results)*100:.1f}%)</p>
+            <p style="color: #000;"><strong style="color: #e74c3c; font-weight: bold;">Negative Outcomes:</strong> {negative_count} ({negative_count/len(batch_results)*100:.1f}%)</p>
+            <p style="color: #000;"><strong style="color: #7f8c8d; font-weight: bold;">Neutral Outcomes:</strong> {neutral_count} ({neutral_count/len(batch_results)*100:.1f}%)</p>
         </div>
         
         <div style="margin: 20px 0;">
             <h4 style="color: #000;">Original Resume (Baseline):</h4>
             <div style="padding: 10px; background-color: #fff; border: 1px solid #ddd; border-radius: 3px; color: #000;">
-                <p style="color: #000;"><strong>Token:</strong> {batch_token}</p>
-                <p style="color: #000;"><strong>Average Score:</strong> {batch_results[0]['avg_score']:.2f} (from {num_runs_per_variation} runs)</p>
-                <p style="color: #000;"><strong>Individual Scores:</strong> {', '.join(map(str, batch_results[0]['scores']))}</p>
-                <p style="color: #000;"><strong>Overall Classification:</strong> <span style="color: {'#27ae60' if batch_results[0]['sentiment'] == 'positive' else '#e74c3c' if batch_results[0]['sentiment'] == 'negative' else '#7f8c8d'}; font-weight: bold;">{batch_results[0]['sentiment'].upper()}</span></p>
+                <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Token:</strong> {batch_token}</p>
+                <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Average Score:</strong> <span style="color: #000; font-weight: bold;">{batch_results[0]['avg_score']:.2f}</span> (from {num_runs_per_variation} runs)</p>
+                <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Individual Scores:</strong> <span style="color: #000;">{', '.join(map(str, batch_results[0]['scores']))}</span></p>
+                <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Overall Classification:</strong> <span style="color: {'#27ae60' if batch_results[0]['sentiment'] == 'positive' else '#e74c3c' if batch_results[0]['sentiment'] == 'negative' else '#7f8c8d'}; font-weight: bold;">{batch_results[0]['sentiment'].upper()}</span></p>
                 <details style="margin-top: 10px;">
                     <summary style="cursor: pointer; color: #3498db;">Show all {num_runs_per_variation} continuations</summary>
                     <ul style="margin-top: 5px;">
@@ -1648,14 +1648,14 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
             <h4 style="color: #000;">Variations of "{batch_token}"</h4>
             
             <div style="overflow-x: auto; max-width: 100%;">
-                <table style="width: 100%; min-width: 600px; border-collapse: collapse; margin-top: 10px; table-layout: auto; color: #000;">
+                <table style="width: 100%; min-width: 600px; border-collapse: collapse; margin-top: 10px; table-layout: auto; backgroundColor: #fff; color: #000;">
                     <thead>
-                        <tr style="background-color: #ecf0f1; color: #000;">
-                            <th style="padding: 8px; text-align: left; border: 1px solid #bdc3c7; color: #000; min-width: 120px;">Replacement</th>
-                            <th style="padding: 8px; text-align: left; border: 1px solid #bdc3c7; color: #000; min-width: 100px;">Category</th>
-                            <th style="padding: 8px; text-align: center; border: 1px solid #bdc3c7; color: #000; min-width: 80px;">Avg Score</th>
-                            <th style="padding: 8px; text-align: center; border: 1px solid #bdc3c7; color: #000; min-width: 150px;">Individual Scores</th>
-                            <th style="padding: 8px; text-align: center; border: 1px solid #bdc3c7; color: #000; min-width: 100px;">Classification</th>
+                        <tr style="background-color: #ecf0f1; color: #000; font-weight: bold;">
+                            <th style="padding: 10px; text-align: left; border: 1px solid #bdc3c7; color: #000; min-width: 120px;">Replacement</th>
+                            <th style="padding: 10px; text-align: left; border: 1px solid #bdc3c7; color: #000; min-width: 100px;">Category</th>
+                            <th style="padding: 10px; text-align: center; border: 1px solid #bdc3c7; color: #000; min-width: 80px;">Avg Score</th>
+                            <th style="padding: 10px; text-align: center; border: 1px solid #bdc3c7; color: #000; min-width: 150px;">Individual Scores</th>
+                            <th style="padding: 10px; text-align: center; border: 1px solid #bdc3c7; color: #000; min-width: 100px;">Classification</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1667,9 +1667,9 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
         scores_display = ', '.join([f'<span style="color: {"#27ae60" if s == 1 else "#e74c3c" if s == -1 else "#7f8c8d"};">{s:+d}</span>' for s in result['scores']])
         
         html_output += f"""
-                <tr style="color: #000;">
-                    <td style="padding: 8px; border: 1px solid #bdc3c7; color: #000; word-wrap: break-word;">
-                        <strong>{result['replacement']}</strong>
+                <tr style="color: #000; background-color: #fff;">
+                    <td style="padding: 10px; border: 1px solid #bdc3c7; color: #000; word-wrap: break-word;">
+                        <strong style="color: #000; font-weight: bold;">{result['replacement']}</strong>
                         <details style="margin-top: 5px;">
                             <summary style="cursor: pointer; color: #3498db; font-size: 0.9em;">Show continuations</summary>
                             <ul style="margin-top: 5px; font-size: 0.9em;">
@@ -1688,8 +1688,8 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
                     <td style="padding: 8px; border: 1px solid #bdc3c7; color: #000;">
                         {result['category']}
                     </td>
-                    <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center; color: #000;">
-                        <strong>{result['avg_score']:.2f}</strong>
+                    <td style="padding: 10px; border: 1px solid #bdc3c7; text-align: center; color: #000;">
+                        <strong style="color: #000; font-weight: bold;">{result['avg_score']:.2f}</strong>
                     </td>
                     <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center; color: #000;">
                         {scores_display}
@@ -1752,24 +1752,24 @@ def reset_resume_text():
     """Reset to original resume text."""
     return sample_corpus
 
-def save_resume_version(text, html_output_1, html_output_2, method):
+def save_resume_version(text, html_content):
     """Save current version for comparison"""
     global _saved_versions
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     version_name = f"Version ({lm_model_name}) - {timestamp}"
 
+    # Wrap the input text in a stylized box
     text_wrap = f"""
-    <div style="padding: 20px; background-color: #f0f0f0; border-radius: 5px;">
-        <h3>Input:</h3>
-        <p style="font-size: 16px; color: #111;">{text}</p>
+    <div style="padding: 20px; background-color: #f0f0f0; border-radius: 5px; margin-bottom: 20px;">
+        <h3 style="color: #000;">Input Text:</h3>
+        <p style="font-size: 16px; color: #111; white-space: pre-wrap;">{text}</p>
     </div>
     """
     
     _saved_versions[version_name] = {
         'text': text,
-        'html': text_wrap + html_output_1 + html_output_2,
-        'method': method,
+        'html': text_wrap + html_content,
         'model': lm_model_name,
         'timestamp': timestamp
     }
@@ -1777,7 +1777,7 @@ def save_resume_version(text, html_output_1, html_output_2, method):
     choices = list(_saved_versions.keys())
     status = f"✅ Saved as: {version_name}"
     
-    return gr.update(choices=choices), status
+    return status, gr.update(choices=choices)
 def load_resume_version(selected):
     """Load a saved resume version."""
     if not selected or not _saved_versions:

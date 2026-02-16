@@ -280,7 +280,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         label="Explanation Method",
                         interactive=False
                     )
-                    resume_explain_btn = gr.Button("Explain", variant='primary', interactive=False)
+                    resume_explain_btn = gr.Button("Explain", variant='primary', interactive=True)
                     explanation_html = gr.HTML(
                         label="Explanation",
                         value="<p>No explanation generated. Click 'Explain' to see results...</p>"

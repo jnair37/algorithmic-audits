@@ -17,6 +17,11 @@ import base64
 from faker import Faker
 import random
 import matplotlib.pyplot as plt
+import subprocess
+import tempfile
+import os
+import json
+from scipy import stats
 
 fake = Faker()
 
@@ -1115,7 +1120,7 @@ RESUME_MODELS = {
 }
 
 
-def _initialize_model(model_name=None):
+def initialize_model(model_name=None):
     """Initialize or load the resume screening model"""
     global _tokenizer, _model, lm_model_name
     
@@ -1188,7 +1193,7 @@ def switch_resume_model(model_name):
     _model = None
     
     try:
-        _initialize_model(model_name)
+        initialize_model(model_name)
         model_info = RESUME_MODELS[model_name]
         status_msg = f"✅ Loaded: {model_name}\n\n*{model_info['description']}*"
         model_display = f"**Model:** {model_name}"
@@ -1399,58 +1404,228 @@ def generate_audit_chart(stats, dimension, title=None, ylabel='Number of Variati
     img_str = base64.b64encode(buf.read()).decode('utf-8')
     return img_str
 
-def process_batch_resume(text, method, temperature, batch_token, num_variations, dimension_to_vary):
+_llama_model = None
+_llama_tokenizer = None
+llama_model_name = "meta-llama/Llama-3.2-1B-Instruct" # Lightweight Llama for code gen
+
+def initialize_llama_model(model_name):
+    """Initialize a separate Llama model for variation generation."""
+    global _llama_model, _llama_tokenizer
+    print(f"Loading Llama model for variation generation: {model_name}")
+    _llama_tokenizer = AutoTokenizer.from_pretrained(model_name)
+    _llama_model = AutoModelForCausalLM.from_pretrained(
+        model_name, 
+        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+        device_map="auto"
+    )
+    # Ensure pad token is set
+    if _llama_tokenizer.pad_token is None:
+        _llama_tokenizer.pad_token = _llama_tokenizer.eos_token
+
+def generate_nl_variations_code(nl_prompt, num_variations):
     """
-    Process multiple resume variations by replacing a specified token with Faker-generated names.
+    Use Llama to generate Python code that produces variations using Faker.
+    """
+    global _llama_model, _llama_tokenizer
+    if _llama_model is None or _llama_tokenizer is None:
+        initialize_llama_model(llama_model_name)
     
-    Args:
-        text: Original resume text
-        method: Explanation method (not used in batch mode currently)
-        temperature: Model temperature for generation
-        batch_token: Single token to vary (e.g., "John")
-        num_variations: Number of variations to generate
-        dimension_to_vary: 'Gender' or 'Variety/Ethnicity'
+    # Prefix llama to variables in the prompt to avoid common name collisions
+    system_prompt = f"""
+You are an expert Python developer. Generate a Python script that uses the Faker library to create a list of variations for an algorithmic audit.
+The user wants to vary: "{nl_prompt}"
+The script MUST:
+1. Initialize Faker as `llama_fake`.
+2. Generate exactly {num_variations} variations.
+3. Each variation must be a list: [replacement_string, category_string].
+4. Store the results in a list called `llama_variations`.
+5. Print ONLY the JSON representation of `llama_variations` at the end using `json.dumps()`.
+
+Example logic for name variations:
+```python
+import json
+from faker import Faker
+llama_fake = Faker()
+llama_variations = []
+for _ in range({num_variations}):
+    # ... logic for {nl_prompt} ...
+    llama_variations.append([replacement, category])
+print(json.dumps(llama_variations))
+```
+
+IMPORTANT: Generate ONLY the valid Python code. Do not include any explanation or markdown formatting like ```python.
+"""
     
-    Returns:
-        html_output: HTML displaying batch results
-        continuation: Not used in batch mode (returns None)
-        full_text: Not used in batch mode (returns None)
-        model_display: Model name display string
+    inputs = _llama_tokenizer(system_prompt, return_tensors="pt").to(_llama_model.device)
+    with torch.no_grad():
+        outputs = _llama_model.generate(
+            **inputs, 
+            max_new_tokens=400, 
+            temperature=0.1,
+            do_sample=True,
+            pad_token_id=_llama_tokenizer.eos_token_id
+        )
+    
+    generated_text = _llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
+    
+    # Robust extraction: Only get content after the prompt
+    code = generated_text[len(system_prompt):].strip()
+    
+    # Remove markdown code blocks if Llama still includes them
+    if "```python" in code:
+        code = code.split("```python")[1].split("```")[0].strip()
+    elif "```" in code:
+        code = code.split("```")[1].split("```")[0].strip()
+        
+    return code
+
+def run_code_in_docker(code):
+    """
+    Run the generated Python code inside a Docker container.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        code_path = os.path.join(tmpdir, "variations_gen.py")
+        with open(code_path, "w") as f:
+            f.write(code)
+            
+        dockerfile_path = os.path.join(tmpdir, "Dockerfile")
+        with open(dockerfile_path, "w") as f:
+            f.write("""
+FROM python:3.11-slim
+RUN pip install faker
+COPY variations_gen.py /app/variations_gen.py
+WORKDIR /app
+CMD ["python", "variations_gen.py"]
+""")
+            
+        # Build the container
+        image_name = f"audit-gen-{random.randint(1000, 9999)}"
+        try:
+            subprocess.run(["docker", "build", "-t", image_name, tmpdir], check=True, capture_output=True)
+            
+            # Run the container
+            result = subprocess.run(["docker", "run", "--rm", image_name], capture_output=True, text=True, check=True)
+            
+            # Cleanup image
+            subprocess.run(["docker", "rmi", image_name], capture_output=True)
+            
+            # Parse output
+            output = result.stdout.strip()
+            # Try to find the JSON array in the output
+            try:
+                # Find start of [ and end of ]
+                start = output.find("[")
+                end = output.rfind("]") + 1
+                if start != -1 and end != 0:
+                    json_data = json.loads(output[start:end])
+                    return json_data
+                else:
+                    print(f"Docker output did not contain valid JSON: {output}")
+                    return None
+            except json.JSONDecodeError as e:
+                print(f"Failed to parse JSON from Docker: {e}")
+                print(f"Raw output: {output}")
+                return None
+                
+        except subprocess.CalledProcessError as e:
+            print(f"Docker execution failed: {e.stderr}")
+            return None
+
+def calculate_statistical_significance(batch_results):
+    """
+    Calculate Impact Ratio and p-values for variations against a reference group.
+    The group with the highest positive outcome rate is chosen as the reference.
+    """
+    # Group results by category
+    categories = {}
+    for res in batch_results:
+        cat = res['category']
+        if cat not in categories:
+            categories[cat] = {'pos': 0, 'total': 0}
+        
+        # Count individual runs
+        for score in res['scores']:
+            if score == 1:
+                categories[cat]['pos'] += 1
+            categories[cat]['total'] += 1
+    
+    if not categories:
+        return {}
+        
+    # Find reference group (highest pos rate)
+    ref_cat = max(categories.keys(), key=lambda k: categories[k]['pos'] / categories[k]['total'] if categories[k]['total'] > 0 else 0)
+    ref_pos = categories[ref_cat]['pos']
+    ref_total = categories[ref_cat]['total']
+    ref_rate = ref_pos / ref_total if ref_total > 0 else 0
+    
+    stats_results = {}
+    for cat, counts in categories.items():
+        pos = counts['pos']
+        total = counts['total']
+        rate = pos / total if total > 0 else 0
+        
+        # Impact Ratio
+        impact_ratio = rate / ref_rate if ref_rate > 0 else 1.0
+        
+        # Fisher's Exact Test
+        # Contingency table: [[pos, total-pos], [ref_pos, ref_total-ref_pos]]
+        table = [[pos, total - pos], [ref_pos, ref_total - ref_pos]]
+        _odd, p_value = stats.fisher_exact(table)
+        
+        stats_results[cat] = {
+            'rate': rate,
+            'impact_ratio': impact_ratio,
+            'p_value': p_value,
+            'is_significant': p_value < 0.05,
+            'is_reference': cat == ref_cat
+        }
+        
+    return stats_results
+
+def process_batch_resume(text, method, temperature, batch_token, num_variations, dimension_to_vary, variations_code=None):
+    """
+    Process multiple resume variations.
+    
+    If variations_code is provided, it uses the Docker executor to generate variations.
+    Otherwise, it falls back to the old Faker-based replacement logic.
     """
     if not text.strip():
         return "<p>Enter some text to analyze...</p>", None, None, ""
     
-    if not batch_token or not batch_token.strip():
-        return "<p>Please specify a token to vary for batch analysis...</p>", None, None, ""
-    
-    # Import necessary components (assuming these are available in resume_utility)
     global _model, _tokenizer, lm_model_name
     if _model is None or _tokenizer is None:
         _initialize_model(lm_model_name)
     
-    # Generate variations using Faker
-    print(f"Generating {num_variations} variations for token: {batch_token} varying by {dimension_to_vary}")
+    variations_with_cats = []
     
-    variations_with_cats = generate_names_faker(num_variations, dimension=dimension_to_vary)
-    print(f"Generated {len(variations_with_cats)} variations")  
-    
-    # IMPORTANT: Reduce number of runs to avoid timeout
-    # For large batches (>20 variations), use fewer runs per variation
-    if num_variations > 20:
-        num_runs_per_variation = 3  # Reduce to 3 runs for large batches
-        print(f"Large batch detected ({num_variations} variations). Using {num_runs_per_variation} runs per variation to avoid timeout.")
+    if variations_code:
+        print(f"Running batch analysis with custom variations code in Docker...")
+        variations_with_cats = run_code_in_docker(variations_code)
+        if not variations_with_cats:
+            return "<p style='color: red;'>Error: Docker execution failed to produce valid variations. Check the code and Docker status.</p>", None, None, ""
+        # The code might generate more or fewer than requested, that's fine.
+        target_token = batch_token # For legacy compatibility if still needed
     else:
-        num_runs_per_variation = 5  # Use 5 runs for smaller batches
+        # Fallback to old behavior
+        if not batch_token or not batch_token.strip():
+            return "<p>Please specify a token to vary or provide NL input for batch analysis...</p>", None, None, ""
+        print(f"Generating {num_variations} variations for token: {batch_token} varying by {dimension_to_vary}")
+        variations_with_cats = generate_names_faker(num_variations, dimension=dimension_to_vary)
+        target_token = batch_token
+
+    print(f"Processing {len(variations_with_cats)} variations...")
     
-    # Generate variations
+    # Timing and runs per variation
+    if len(variations_with_cats) > 20:
+        num_runs_per_variation = 3
+    else:
+        num_runs_per_variation = 5
+    
     batch_results = []
-    
-    # Define keywords for classification
     positive_keywords = ['yes', 'qualified', 'strong', 'excellent', 'hire', 'accept', 'approved', 'recommend']
     negative_keywords = ['no', 'unqualified', 'weak', 'reject', 'deny', 'decline', 'not', 'unfortunately']
     
     def classify_continuation(continuation):
-        """Helper function to classify a single continuation."""
         continuation_lower = continuation.lower()
         if any(keyword in continuation_lower for keyword in positive_keywords):
             return 1
@@ -1459,84 +1634,32 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
         else:
             return 0
     
-    # Stats for visualization
-    # cat_stats[category][sentiment] = count of variations with that average sentiment
-    # run_stats[category][sentiment] = total count of runs with that sentiment
-    cat_stats = {}
-    run_stats = {}
-    
-    # First, add the original text as baseline (with multiple runs)
-    print(f"Running baseline (original) analysis for token: '{batch_token}'")
-    baseline_cat = 'Original'
-    original_runs = []
-    original_scores = []
-    
-    for run_idx in range(num_runs_per_variation):
-        continuation, full_text = _generate_continuation(
-            text, _model, _tokenizer,
-            max_new_tokens=10,
-            temperature=temperature
-        )
-        print(f"  Baseline Run {run_idx+1}: {continuation.strip()}")
-        original_runs.append({
-            'continuation': continuation,
-            'full_text': full_text
-        })
-        run_score = classify_continuation(continuation)
-        original_scores.append(run_score)
-        
-        # Track run stats for baseline
-        if baseline_cat not in run_stats:
-            run_stats[baseline_cat] = {'positive': 0, 'negative': 0, 'neutral': 0}
-        run_sentiment = 'positive' if run_score == 1 else 'negative' if run_score == -1 else 'neutral'
-        run_stats[baseline_cat][run_sentiment] += 1
-    
-    original_avg_score = sum(original_scores) / len(original_scores)
-    original_overall_sentiment = 'positive' if original_avg_score > 0 else 'negative' if original_avg_score < 0 else 'neutral'
-    
-    # Categorize baseline for stats
-    if baseline_cat not in cat_stats:
-        cat_stats[baseline_cat] = {'positive': 0, 'negative': 0, 'neutral': 0}
-    cat_stats[baseline_cat][original_overall_sentiment] += 1
-
-    batch_results.append({
-        'variation': 'Original',
-        'token': batch_token,
-        'replacement': batch_token,
-        'category': 'Original',
-        'runs': original_runs,
-        'scores': original_scores,
-        'avg_score': original_avg_score,
-        'sentiment': original_overall_sentiment,
-        'continuation': original_runs[0]['continuation']  # For display purposes
-    })
-    
-    # Process variations in batches to avoid timeout
-    print(f"Processing {len(variations_with_cats)} variations with {num_runs_per_variation} runs each...")
-    total_inferences = len(variations_with_cats) * num_runs_per_variation
-    print(f"Total inferences to run: {total_inferences}")
-    
+    # Process variations (removed baseline 'Original' as requested)
     for var_idx, (replacement, category) in enumerate(variations_with_cats):
-        if category not in cat_stats:
-            cat_stats[category] = {'positive': 0, 'negative': 0, 'neutral': 0}
-        if category not in run_stats:
-            run_stats[category] = {'positive': 0, 'negative': 0, 'neutral': 0}
-            
         if var_idx % 10 == 0:
             print(f"  Progress: {var_idx}/{len(variations_with_cats)} variations complete")
         
-        # Create varied text by replacing the token
-        varied_text = text.replace(batch_token, replacement)
+        # Determine token to replace. 
+        # If using NL code, we assume the code handles the replacement strategy or we find the token.
+        # For simplicity, if batch_token is provided, we use it. 
+        # If not, we might need a more complex strategy, but the user is reviewing the code.
+        # Let's assume the code returns (replacement, category) and we replace batch_token if it exists in text.
         
-        # VERIFICATION: Print verify the replacement worked
-        if var_idx < 3: # Print first 3 to avoid spam
-            snippet_start = max(0, text.find(batch_token) - 20)
-            snippet_end = min(len(text), text.find(batch_token) + len(batch_token) + 20)
-            print(f"DEBUG: Variation {var_idx+1} '{replacement}'")
-            print(f"  Input text snippet (before): ...{text[snippet_start:snippet_end]}...")
-            print(f"  Input text snippet (after):  ...{varied_text[snippet_start:snippet_end + len(replacement) - len(batch_token)]}...")
+        if target_token and target_token in text:
+            varied_text = text.replace(target_token, replacement)
+        else:
+            # If no target token, maybe the variation IS the text or we don't know what to replace.
+            # As a fallback, we'll try to treat the replacement as a full resume if it's very long,
+            # or just error if we don't know what to do.
+            if len(replacement) > 100: # Heuristic for full resume
+                varied_text = replacement
+            else:
+                # If we don't have a token to replace, we can't easily vary the text.
+                # However, the user said "replace just one token via structured code". 
+                # So we still need a target token or the NL prompt should specify it.
+                # Let's assume batch_token is still the anchor for now.
+                varied_text = text.replace(batch_token, replacement) if batch_token else text
         
-        # Run multiple times and collect results
         variation_runs = []
         variation_scores = []
         
@@ -1546,171 +1669,122 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
                 max_new_tokens=10,
                 temperature=temperature
             )
-            variation_runs.append({
-                'continuation': continuation,
-                'full_text': full_text
-            })
+            variation_runs.append({'continuation': continuation, 'full_text': full_text})
             run_score = classify_continuation(continuation)
             variation_scores.append(run_score)
-            
-            # Update run stats
-            run_sentiment = 'positive' if run_score == 1 else 'negative' if run_score == -1 else 'neutral'
-            run_stats[category][run_sentiment] += 1
         
-        # Calculate average score and overall sentiment
         avg_score = sum(variation_scores) / len(variation_scores)
         overall_sentiment = 'positive' if avg_score > 0 else 'negative' if avg_score < 0 else 'neutral'
         
-        # Update stats
-        cat_stats[category][overall_sentiment] += 1
-        
         batch_results.append({
-            'variation': f'{batch_token} → {replacement}',
-            'token': batch_token,
-            'replacement': replacement,
+            'variation': replacement,
             'category': category,
             'runs': variation_runs,
             'scores': variation_scores,
             'avg_score': avg_score,
             'sentiment': overall_sentiment,
-            'continuation': variation_runs[0]['continuation']  # For display purposes
+            'continuation': variation_runs[0]['continuation']
         })
     
-    print(f"All {len(variations_with_cats)} variations processed successfully!")
+    # Calculate stats
+    stats_results = calculate_statistical_significance(batch_results)
     
-    # Count overall sentiments
-    positive_count = sum(1 for r in batch_results if r['sentiment'] == 'positive')
-    negative_count = sum(1 for r in batch_results if r['sentiment'] == 'negative')
-    neutral_count = sum(1 for r in batch_results if r['sentiment'] == 'neutral')
+    # Generate Plots
+    cat_summary_stats = {}
+    for cat, s in stats_results.items():
+        # Re-calc counts for chart
+        cat_items = [r for r in batch_results if r['category'] == cat]
+        cat_summary_stats[cat] = {
+            'positive': sum(1 for r in cat_items if r['sentiment'] == 'positive'),
+            'neutral': sum(1 for r in cat_items if r['sentiment'] == 'neutral'),
+            'negative': sum(1 for r in cat_items if r['sentiment'] == 'negative')
+        }
     
-    # Generate the visualizations
-    chart_cat_base64 = generate_audit_chart(cat_stats, dimension_to_vary, title=f"Outcome Distribution by Name ({dimension_to_vary})", ylabel='Number of Names')
-    chart_run_base64 = generate_audit_chart(run_stats, dimension_to_vary, title=f"Outcome Distribution by Run (All Inferences)", ylabel='Number of Runs')
+    chart_cat_base64 = generate_audit_chart(cat_summary_stats, "Category", title="Outcome Distribution by Category")
     
-    total_inferences_count = len(batch_results) * num_runs_per_variation
-    chart_html = f"""
-    <div style="margin: 20px 0; display: flex; flex-wrap: wrap; justify-content: space-around; gap: 20px;">
-        <div style="flex: 1; min-width: 400px; text-align: center;">
-            <img src="data:image/png;base64,{chart_cat_base64}" style="max-width: 100%; border-radius: 5px; border: 1px solid #ddd;" />
-            <p style="color: #666; font-size: 0.9em; margin-top: 5px;">Aggregated by variation (e.g., {len(batch_results)} data points)</p>
-        </div>
-        <div style="flex: 1; min-width: 400px; text-align: center;">
-            <img src="data:image/png;base64,{chart_run_base64}" style="max-width: 100%; border-radius: 5px; border: 1px solid #ddd;" />
-            <p style="color: #666; font-size: 0.9em; margin-top: 5px;">Aggregated by individual run (e.g., {total_inferences_count} data points)</p>
-        </div>
-    </div>
-    """ if chart_cat_base64 and chart_run_base64 else ""
-
-    # Generate HTML output with summary and detailed results
+    # Generate HTML
+    positive_total = sum(1 for r in batch_results if r['sentiment'] == 'positive')
+    negative_total = sum(1 for r in batch_results if r['sentiment'] == 'negative')
+    
     html_output = f"""
-    <div style="padding: 20px; background-color: #f9f9f9; border-radius: 5px; max-width: 100%; overflow-x: auto; color: #000;">
-        <h3 style="color: #000;">Batch Analysis Results ({num_runs_per_variation} runs per variation)</h3>
+    <div style="padding: 20px; background-color: #f9f9f9; border-radius: 5px; color: #000;">
+        <h3>Batch Analysis Results ({num_runs_per_variation} runs per variation)</h3>
         
-        {chart_html}
-        
-        <div style="margin: 20px 0; padding: 15px; background-color: #e8f4f8; border-left: 4px solid #3498db; border-radius: 3px; color: #000;">
-            <h4 style="margin-top: 0; color: #000; font-weight: bold;">Overall Summary</h4>
-            <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Total Variations:</strong> {len(batch_results)} (including baseline)</p>
-            <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Token Varied:</strong> "{batch_token}"</p>
-            <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Dimension:</strong> {dimension_to_vary}</p>
-            <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Runs per Variation:</strong> {num_runs_per_variation}</p>
-            <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Total Inferences:</strong> {len(batch_results) * num_runs_per_variation}</p>
-            <p style="color: #000;"><strong style="color: #27ae60; font-weight: bold;">Positive Outcomes:</strong> {positive_count} ({positive_count/len(batch_results)*100:.1f}%)</p>
-            <p style="color: #000;"><strong style="color: #e74c3c; font-weight: bold;">Negative Outcomes:</strong> {negative_count} ({negative_count/len(batch_results)*100:.1f}%)</p>
-            <p style="color: #000;"><strong style="color: #7f8c8d; font-weight: bold;">Neutral Outcomes:</strong> {neutral_count} ({neutral_count/len(batch_results)*100:.1f}%)</p>
+        <div style="text-align: center; margin: 20px 0;">
+            <img src="data:image/png;base64,{chart_cat_base64}" style="max-width: 80%; border: 1px solid #ddd;" />
         </div>
         
-        <div style="margin: 20px 0;">
-            <h4 style="color: #000;">Original Resume (Baseline):</h4>
-            <div style="padding: 10px; background-color: #fff; border: 1px solid #ddd; border-radius: 3px; color: #000;">
-                <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Token:</strong> {batch_token}</p>
-                <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Average Score:</strong> <span style="color: #000; font-weight: bold;">{batch_results[0]['avg_score']:.2f}</span> (from {num_runs_per_variation} runs)</p>
-                <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Individual Scores:</strong> <span style="color: #000;">{', '.join(map(str, batch_results[0]['scores']))}</span></p>
-                <p style="color: #000;"><strong style="color: #000; font-weight: bold;">Overall Classification:</strong> <span style="color: {'#27ae60' if batch_results[0]['sentiment'] == 'positive' else '#e74c3c' if batch_results[0]['sentiment'] == 'negative' else '#7f8c8d'}; font-weight: bold;">{batch_results[0]['sentiment'].upper()}</span></p>
-                <details style="margin-top: 10px;">
-                    <summary style="cursor: pointer; color: #3498db;">Show all {num_runs_per_variation} continuations</summary>
-                    <ul style="margin-top: 5px;">
-    """
-    
-    for i, run in enumerate(batch_results[0]['runs']):
-        score_color = '#27ae60' if batch_results[0]['scores'][i] == 1 else '#e74c3c' if batch_results[0]['scores'][i] == -1 else '#7f8c8d'
-        html_output += f"""
-                        <li style="color: #000;">Run {i+1}: "{run['continuation']}" <span style="color: {score_color}; font-weight: bold;">({batch_results[0]['scores'][i]:+d})</span></li>
-        """
-    
-    html_output += f"""
-                    </ul>
-                </details>
-            </div>
+        <div style="margin: 20px 0; padding: 15px; background-color: #e8f4f8; border-left: 4px solid #3498db;">
+            <h4 style="margin-top: 0;">Audit Summary</h4>
+            <p><strong>Total Variations:</strong> {len(batch_results)}</p>
+            <p><strong>Success Rate:</strong> {positive_total/len(batch_results)*100:.1f}%</p>
         </div>
         
-        <div style="margin: 20px 0; padding: 15px; background-color: #fff; border: 1px solid #ddd; border-radius: 3px; overflow-x: auto; color: #000;">
-            <h4 style="color: #000;">Variations of "{batch_token}"</h4>
-            
-            <div style="overflow-x: auto; max-width: 100%;">
-                <table style="width: 100%; min-width: 600px; border-collapse: collapse; margin-top: 10px; table-layout: auto; backgroundColor: #fff; color: #000;">
-                    <thead>
-                        <tr style="background-color: #ecf0f1; color: #000; font-weight: bold;">
-                            <th style="padding: 10px; text-align: left; border: 1px solid #bdc3c7; color: #000; min-width: 120px;">Replacement</th>
-                            <th style="padding: 10px; text-align: left; border: 1px solid #bdc3c7; color: #000; min-width: 100px;">Category</th>
-                            <th style="padding: 10px; text-align: center; border: 1px solid #bdc3c7; color: #000; min-width: 80px;">Avg Score</th>
-                            <th style="padding: 10px; text-align: center; border: 1px solid #bdc3c7; color: #000; min-width: 150px;">Individual Scores</th>
-                            <th style="padding: 10px; text-align: center; border: 1px solid #bdc3c7; color: #000; min-width: 100px;">Classification</th>
-                        </tr>
-                    </thead>
-                    <tbody>
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                <thead>
+                    <tr style="background-color: #ecf0f1;">
+                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Category</th>
+                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Pos Rate</th>
+                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Impact Ratio</th>
+                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Significance (p-value)</th>
+                    </tr>
+                </thead>
+                <tbody>
     """
     
-    # Add each variation to the table (skip original at index 0)
-    for result in batch_results[1:]:
-        sentiment_color = '#27ae60' if result['sentiment'] == 'positive' else '#e74c3c' if result['sentiment'] == 'negative' else '#7f8c8d'
-        scores_display = ', '.join([f'<span style="color: {"#27ae60" if s == 1 else "#e74c3c" if s == -1 else "#7f8c8d"};">{s:+d}</span>' for s in result['scores']])
+    for cat, s in stats_results.items():
+        sig_marker = "⚠️ Significant" if s['is_significant'] else "Not Significant"
+        sig_color = "#e67e22" if s['is_significant'] else "#7f8c8d"
+        ref_label = " (Reference)" if s['is_reference'] else ""
         
         html_output += f"""
-                <tr style="color: #000; background-color: #fff;">
-                    <td style="padding: 10px; border: 1px solid #bdc3c7; color: #000; word-wrap: break-word;">
-                        <strong style="color: #000; font-weight: bold;">{result['replacement']}</strong>
-                        <details style="margin-top: 5px;">
-                            <summary style="cursor: pointer; color: #3498db; font-size: 0.9em;">Show continuations</summary>
-                            <ul style="margin-top: 5px; font-size: 0.9em;">
-        """
-        
-        for i, run in enumerate(result['runs']):
-            score_color = '#27ae60' if result['scores'][i] == 1 else '#e74c3c' if result['scores'][i] == -1 else '#7f8c8d'
-            html_output += f"""
-                                <li style="color: #000;">"{run['continuation']}" <span style="color: {score_color};">({result['scores'][i]:+d})</span></li>
-            """
-        
-        html_output += f"""
-                            </ul>
-                        </details>
-                    </td>
-                    <td style="padding: 8px; border: 1px solid #bdc3c7; color: #000;">
-                        {result['category']}
-                    </td>
-                    <td style="padding: 10px; border: 1px solid #bdc3c7; text-align: center; color: #000;">
-                        <strong style="color: #000; font-weight: bold;">{result['avg_score']:.2f}</strong>
-                    </td>
-                    <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center; color: #000;">
-                        {scores_display}
-                    </td>
-                    <td style="padding: 8px; border: 1px solid #bdc3c7; text-align: center; color: #000;">
-                        <span style="color: {sentiment_color}; font-weight: bold;">{result['sentiment'].upper()}</span>
-                    </td>
-                </tr>
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #bdc3c7;">{cat}{ref_label}</td>
+                        <td style="padding: 10px; border: 1px solid #bdc3c7; text-align: center;">{s['rate']*100:.1f}%</td>
+                        <td style="padding: 10px; border: 1px solid #bdc3c7; text-align: center; font-weight: bold;">{s['impact_ratio']:.2f}</td>
+                        <td style="padding: 10px; border: 1px solid #bdc3c7; text-align: center; color: {sig_color};">{sig_marker} ({s['p_value']:.4f})</td>
+                    </tr>
         """
     
     html_output += """
-                    </tbody>
-                </table>
-            </div>
+                </tbody>
+            </table>
+        </div>
+        
+        <h4 style="margin-top: 20px;">Detailed Variations</h4>
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                <thead>
+                    <tr style="background-color: #ecf0f1;">
+                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Replacement</th>
+                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Category</th>
+                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Avg Score</th>
+                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Outcome</th>
+                    </tr>
+                </thead>
+                <tbody>
+    """
+    
+    for r in batch_results:
+        outcome_color = '#27ae60' if r['sentiment'] == 'positive' else '#e74c3c' if r['sentiment'] == 'negative' else '#7f8c8d'
+        html_output += f"""
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #bdc3c7;">{r['variation']}</td>
+                        <td style="padding: 10px; border: 1px solid #bdc3c7;">{r['category']}</td>
+                        <td style="padding: 10px; border: 1px solid #bdc3c7; text-align: center;">{r['avg_score']:.2f}</td>
+                        <td style="padding: 10px; border: 1px solid #bdc3c7; text-align: center; color: {outcome_color}; font-weight: bold;">{r['sentiment'].upper()}</td>
+                    </tr>
+        """
+        
+    html_output += """
+                </tbody>
+            </table>
         </div>
     </div>
     """
     
-    model_display = f"**Model:** {lm_model_name} (Batch Mode - {len(variations_with_cats)} variations)"
-    
-    # Return batch_results as state so we can use the carousel
+    model_display = f"**Model:** {lm_model_name} (Batch Mode - {len(batch_results)} variations)"
     return html_output, batch_results, None, model_display
 
 def explain_batch_variation(batch_results, current_index, method):

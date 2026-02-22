@@ -1281,7 +1281,7 @@ def process_resume(text, method, temperature):
     # Call resume screening model
     
     if _model is None or _tokenizer is None:
-        _initialize_model(lm_model_name)
+        initialize_model(lm_model_name)
 
     # now: GENERATE FIRST and return before explaining
     continuation, full_text = _generate_continuation(
@@ -1422,113 +1422,338 @@ def initialize_llama_model(model_name):
     if _llama_tokenizer.pad_token is None:
         _llama_tokenizer.pad_token = _llama_tokenizer.eos_token
 
-def generate_nl_variations_code(nl_prompt, num_variations):
-    """
-    Use Llama to generate Python code that produces variations using Faker.
-    """
-    global _llama_model, _llama_tokenizer
-    if _llama_model is None or _llama_tokenizer is None:
-        initialize_llama_model(llama_model_name)
-    
-    # Prefix llama to variables in the prompt to avoid common name collisions
-    system_prompt = f"""
-You are an expert Python developer. Generate a Python script that uses the Faker library to create a list of variations for an algorithmic audit.
-The user wants to vary: "{nl_prompt}"
-The script MUST:
-1. Initialize Faker as `llama_fake`.
-2. Generate exactly {num_variations} variations.
-3. Each variation must be a list: [replacement_string, category_string].
-4. Store the results in a list called `llama_variations`.
-5. Print ONLY the JSON representation of `llama_variations` at the end using `json.dumps()`.
+# =============================================================================
+# Boilerplate templates for common audit dimensions (keyword-matched)
+# =============================================================================
 
-Example logic for name variations:
-```python
+NAMES_BOILERPLATE = """\
 import json
 from faker import Faker
+
 llama_fake = Faker()
 llama_variations = []
-for _ in range({num_variations}):
-    # ... logic for {nl_prompt} ...
-    llama_variations.append([replacement, category])
-print(json.dumps(llama_variations))
-```
+_seen = set()
 
-IMPORTANT: Generate ONLY the valid Python code. Do not include any explanation or markdown formatting like ```python.
+_locales = [
+    ("en_US", "US / White"),
+    ("es_ES", "Hispanic / Latino"),
+    ("fr_FR", "French / European"),
+    ("de_DE", "German / European"),
+    ("en_IN", "South Asian"),
+    ("zh_CN", "East Asian"),
+    ("ar_AA", "Arabic / Middle Eastern"),
+]
+
+# Half male, half female from diverse locales
+_target = {NUM_VARIATIONS}
+_male_target = _target // 2
+_female_target = _target - _male_target
+
+for _loc, _cat in _locales * 20:
+    if len(llama_variations) >= _target:
+        break
+    _f = Faker(_loc)
+    if len([v for v in llama_variations if v[1].endswith("Male")]) < _male_target:
+        _name = _f.first_name_male() + " " + _f.last_name()
+        _c = _cat + " Male"
+    else:
+        _name = _f.first_name_female() + " " + _f.last_name()
+        _c = _cat + " Female"
+    if _name not in _seen:
+        _seen.add(_name)
+        llama_variations.append([_name, _c])
+
+print(json.dumps(llama_variations[:{NUM_VARIATIONS}]))
 """
-    
-    inputs = _llama_tokenizer(system_prompt, return_tensors="pt").to(_llama_model.device)
-    with torch.no_grad():
-        outputs = _llama_model.generate(
-            **inputs, 
-            max_new_tokens=400, 
-            temperature=0.1,
-            do_sample=True,
-            pad_token_id=_llama_tokenizer.eos_token_id
-        )
-    
-    generated_text = _llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
-    
-    # Robust extraction: Only get content after the prompt
-    code = generated_text[len(system_prompt):].strip()
-    
-    # Remove markdown code blocks if Llama still includes them
+
+AGE_BOILERPLATE = """\
+import json
+from datetime import datetime
+
+_current_year = datetime.now().year
+llama_variations = []
+
+_bands = [
+    (2, 5, "Entry-level (22-25)"),        # 2-5 years ago: early 20s
+    (5, 10, "Mid-career (25-30)"),
+    (10, 20, "Established (30-40)"),
+    (20, 35, "Senior (40-55)"),
+    (35, 45, "Near retirement (55-65)"),
+]
+
+_per_band = max(1, {NUM_VARIATIONS} // len(_bands))
+for _offset_min, _offset_max, _label in _bands:
+    for _yr in range(_current_year - _offset_max, _current_year - _offset_min + 1):
+        if len(llama_variations) >= {NUM_VARIATIONS}:
+            break
+        llama_variations.append([str(_yr), _label])
+    if len(llama_variations) >= {NUM_VARIATIONS}:
+        break
+
+print(json.dumps(llama_variations[:{NUM_VARIATIONS}]))
+"""
+
+INSTITUTION_BOILERPLATE = """\
+import json
+
+_institutions = [
+    # Tier 1: Ivy / Elite Research
+    ("Harvard University", "Ivy / Elite Research"),
+    ("Stanford University", "Ivy / Elite Research"),
+    ("MIT", "Ivy / Elite Research"),
+    ("Yale University", "Ivy / Elite Research"),
+    ("Princeton University", "Ivy / Elite Research"),
+    # Tier 2: Strong State Flagships
+    ("University of Michigan", "State Flagship"),
+    ("UC Berkeley", "State Flagship"),
+    ("University of Texas at Austin", "State Flagship"),
+    ("Ohio State University", "State Flagship"),
+    ("University of Florida", "State Flagship"),
+    # Tier 3: Regional Universities
+    ("Western Michigan University", "Regional University"),
+    ("University of North Texas", "Regional University"),
+    ("California State University, Long Beach", "Regional University"),
+    ("Georgia State University", "Regional University"),
+    # Tier 4: Community / For-Profit
+    ("City College of San Francisco", "Community College"),
+    ("Houston Community College", "Community College"),
+    ("Northern Virginia Community College", "Community College"),
+    ("University of Phoenix", "For-Profit"),
+    ("DeVry University", "For-Profit"),
+]
+
+llama_variations = [[inst, tier] for inst, tier in _institutions][:{NUM_VARIATIONS}]
+print(json.dumps(llama_variations))
+"""
+
+FREEFORM_BOILERPLATE = """\
+import json
+from faker import Faker
+
+llama_fake = Faker()
+llama_variations = []
+
+# TODO: Implement variation logic for: {NL_PROMPT}
+# Each item must be [replacement_string, category_string]
+# Example:
+# for _ in range({NUM_VARIATIONS}):
+#     replacement = llama_fake.word()  # replace with your logic
+#     category = "Category"
+#     llama_variations.append([replacement, category])
+
+print(json.dumps(llama_variations[:{NUM_VARIATIONS}]))
+"""
+
+
+def _keyword_match_template(nl_prompt: str) -> str:
+    """Return the best-matching boilerplate key for the given NL prompt."""
+    lower = nl_prompt.lower()
+    if any(w in lower for w in ["name", "first name", "gender", "ethnicity", "race", "nationality"]):
+        return "names"
+    if any(w in lower for w in ["year", "age", "graduation", "birth", "experience", "senior", "junior"]):
+        return "age"
+    if any(w in lower for w in ["school", "university", "college", "institution", "degree", "alma mater"]):
+        return "institution"
+    return "freeform"
+
+
+def _extract_clean_code(raw: str, prompt: str) -> str:
+    """
+    Robustly extract valid Python code from LLM output.
+    - Strips the leading prompt echo (tokenizer decode includes the full input)
+    - Removes markdown fences
+    - Truncates after the last closing ] to avoid trailing prose
+    """
+    # Remove prompt echo
+    code = raw[len(prompt):].strip() if raw.startswith(prompt) else raw.strip()
+
+    # Strip markdown fences
     if "```python" in code:
         code = code.split("```python")[1].split("```")[0].strip()
     elif "```" in code:
         code = code.split("```")[1].split("```")[0].strip()
-        
+
+    # Truncate at the last `])` or `])` that closes llama_variations
+    last_bracket = code.rfind("])")
+    if last_bracket != -1:
+        # Include the ]) and whatever is on that line (e.g. the print statement)
+        end_of_line = code.find("\n", last_bracket)
+        code = code[:end_of_line].strip() if end_of_line != -1 else code[:last_bracket + 2].strip()
+
     return code
 
-def run_code_in_docker(code):
+
+def generate_nl_variations_code(nl_prompt: str, num_variations: int) -> str:
     """
-    Run the generated Python code inside a Docker container.
+    Use Llama to generate Python code that produces audit variations.
+
+    Strategy:
+    1. Keyword-match the NL prompt to a domain-specific boilerplate template.
+    2. Build a few-shot prompt with 3 labelled examples covering the most
+       common audit dimensions (names, age, institution).
+    3. Ask Llama to adapt the closest template to the user's specific intent.
+    4. Clean and return the generated code for user review before execution.
     """
+    global _llama_model, _llama_tokenizer
+    if _llama_model is None or _llama_tokenizer is None:
+        initialize_llama_model(llama_model_name)
+
+    # --- Keyword match to choose seed template ---
+    template_key = _keyword_match_template(nl_prompt)
+    templates = {
+        "names": NAMES_BOILERPLATE,
+        "age": AGE_BOILERPLATE,
+        "institution": INSTITUTION_BOILERPLATE,
+        "freeform": FREEFORM_BOILERPLATE,
+    }
+    seed_template = (
+        templates[template_key]
+        .replace("{NUM_VARIATIONS}", str(num_variations))
+        .replace("{NL_PROMPT}", nl_prompt)
+    )
+
+    # --- Few-shot prompt ---
+    few_shot_prompt = f"""You are an expert Python developer specialising in algorithmic audit tools.
+Your task: generate a self-contained Python script that creates EXACTLY {num_variations} resume variations.
+
+STRICT OUTPUT RULES:
+- Output ONLY valid Python code. No prose, no markdown fences, no explanations.
+- All variables must be prefixed with `llama_` to avoid collisions.
+- The result list MUST be named `llama_variations`.
+- Every element in `llama_variations` MUST be a list: [replacement_string, category_string].
+- The LAST line MUST be: print(json.dumps(llama_variations[:{num_variations}]))
+- Do NOT use: import os, import sys, import subprocess, open(), eval(), exec()
+
+--- EXAMPLE 1: Name variations (gender / ethnicity bias) ---
+import json
+from faker import Faker
+llama_fake = Faker()
+llama_variations = []
+_seen = set()
+_locales = [("en_US", "White US"), ("es_ES", "Hispanic"), ("en_IN", "South Asian")]
+for _loc, _cat in _locales * 20:
+    if len(llama_variations) >= {num_variations}: break
+    _f = Faker(_loc)
+    _name = _f.first_name_male() + " " + _f.last_name()
+    if _name not in _seen:
+        _seen.add(_name)
+        llama_variations.append([_name, _cat + " Male"])
+print(json.dumps(llama_variations[:{num_variations}]))
+
+--- EXAMPLE 2: Graduation year variations (age bias) ---
+import json
+from datetime import datetime
+_year = datetime.now().year
+llama_variations = []
+_bands = [(_year-3, "Early career"), (_year-10, "Mid-career"), (_year-25, "Senior"), (_year-40, "Near retirement")]
+for _yr, _label in _bands * 10:
+    if len(llama_variations) >= {num_variations}: break
+    llama_variations.append([str(_yr), _label])
+print(json.dumps(llama_variations[:{num_variations}]))
+
+--- EXAMPLE 3: University name variations (prestige / socioeconomic bias) ---
+import json
+_universities = [
+    ["Harvard University", "Ivy / Elite"], ["MIT", "Ivy / Elite"],
+    ["UC Berkeley", "State Flagship"], ["Ohio State University", "State Flagship"],
+    ["City College of San Francisco", "Community College"],
+]
+llama_variations = (_universities * 10)[:{num_variations}]
+print(json.dumps(llama_variations))
+
+--- TASK ---
+The user wants to audit for: "{nl_prompt}"
+Starting template (adapt this to the user's specific intent):
+{seed_template}
+"""
+
+    # --- Generate code ---
+    inputs = _llama_tokenizer(few_shot_prompt, return_tensors="pt").to(_llama_model.device)
+    with torch.no_grad():
+        outputs = _llama_model.generate(
+            **inputs,
+            max_new_tokens=500,
+            temperature=0.05,       # Very low temperature — we want deterministic boilerplate
+            do_sample=True,
+            pad_token_id=_llama_tokenizer.eos_token_id,
+            repetition_penalty=1.15,
+        )
+
+    generated_text = _llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    # --- Clean output ---
+    code = _extract_clean_code(generated_text, few_shot_prompt)
+
+    # Fallback: if LLM output is empty or too short, return the seed template directly
+    if len(code.strip()) < 50:
+        print("[NL→Code] LLM output too short — returning seed template as fallback.")
+        code = seed_template
+
+    return code
+
+# Patterns that are never allowed in LLM-generated variation code
+_BLOCKED_PATTERNS = [
+    "import os", "import sys", "import subprocess", "import shutil",
+    "import socket", "import requests", "import urllib", "import http",
+    "__import__", "open(", "eval(", "exec(", "compile(",
+    "os.path", "os.system", "os.remove", "os.unlink",
+]
+
+def _is_safe_code(code: str) -> tuple:
+    """
+    Check generated code for disallowed patterns before execution.
+    Returns (is_safe: bool, reason: str).
+    """
+    for pattern in _BLOCKED_PATTERNS:
+        if pattern in code:
+            return False, f"Blocked pattern found: '{pattern}'"
+    return True, ""
+
+
+def run_code_local(code: str):
+    """
+    Run LLM-generated Python code in a sandboxed child process (no Docker required).
+    Works in Colab, VMs, and local dev environments.
+    """
+    is_safe, reason = _is_safe_code(code)
+    if not is_safe:
+        print(f"[SANDBOX] Code blocked: {reason}")
+        return None
+
     with tempfile.TemporaryDirectory() as tmpdir:
         code_path = os.path.join(tmpdir, "variations_gen.py")
         with open(code_path, "w") as f:
             f.write(code)
-            
-        dockerfile_path = os.path.join(tmpdir, "Dockerfile")
-        with open(dockerfile_path, "w") as f:
-            f.write("""
-FROM python:3.11-slim
-RUN pip install faker
-COPY variations_gen.py /app/variations_gen.py
-WORKDIR /app
-CMD ["python", "variations_gen.py"]
-""")
-            
-        # Build the container
-        image_name = f"audit-gen-{random.randint(1000, 9999)}"
+
         try:
-            subprocess.run(["docker", "build", "-t", image_name, tmpdir], check=True, capture_output=True)
-            
-            # Run the container
-            result = subprocess.run(["docker", "run", "--rm", image_name], capture_output=True, text=True, check=True)
-            
-            # Cleanup image
-            subprocess.run(["docker", "rmi", image_name], capture_output=True)
-            
-            # Parse output
+            result = subprocess.run(
+                ["python", code_path],
+                capture_output=True,
+                text=True,
+                timeout=30  # seconds — prevents runaway generation
+            )
+
+            if result.returncode != 0:
+                print(f"[SANDBOX] Execution error:\n{result.stderr}")
+                return None
+
             output = result.stdout.strip()
-            # Try to find the JSON array in the output
+
+            # Extract the JSON array from stdout
             try:
-                # Find start of [ and end of ]
                 start = output.find("[")
                 end = output.rfind("]") + 1
-                if start != -1 and end != 0:
-                    json_data = json.loads(output[start:end])
-                    return json_data
+                if start != -1 and end > 0:
+                    return json.loads(output[start:end])
                 else:
-                    print(f"Docker output did not contain valid JSON: {output}")
+                    print(f"[SANDBOX] Output did not contain valid JSON array: {output}")
                     return None
             except json.JSONDecodeError as e:
-                print(f"Failed to parse JSON from Docker: {e}")
-                print(f"Raw output: {output}")
+                print(f"[SANDBOX] JSON parse failed: {e}\nRaw output: {output}")
                 return None
-                
-        except subprocess.CalledProcessError as e:
-            print(f"Docker execution failed: {e.stderr}")
+
+        except subprocess.TimeoutExpired:
+            print("[SANDBOX] Code execution timed out (30s limit).")
             return None
 
 def calculate_statistical_significance(batch_results):
@@ -1594,15 +1819,15 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
     
     global _model, _tokenizer, lm_model_name
     if _model is None or _tokenizer is None:
-        _initialize_model(lm_model_name)
+        initialize_model(lm_model_name)
     
     variations_with_cats = []
     
     if variations_code:
-        print(f"Running batch analysis with custom variations code in Docker...")
-        variations_with_cats = run_code_in_docker(variations_code)
+        print(f"Running batch analysis with custom variations code (local sandbox)...")
+        variations_with_cats = run_code_local(variations_code)
         if not variations_with_cats:
-            return "<p style='color: red;'>Error: Docker execution failed to produce valid variations. Check the code and Docker status.</p>", None, None, ""
+            return "<p style='color: red;'>Error: Code execution failed. Check the generated code for errors or disallowed operations (e.g., file I/O, os/sys imports).</p>", None, None, ""
         # The code might generate more or fewer than requested, that's fine.
         target_token = batch_token # For legacy compatibility if still needed
     else:
@@ -1826,12 +2051,22 @@ def reset_resume_text():
     """Reset to original resume text."""
     return sample_corpus
 
-def save_resume_version(text, html_content):
-    """Save current version for comparison"""
+def save_resume_version(text, html_content, auto_label=None):
+    """Save current version for comparison.
+    
+    Args:
+        text: The resume text that was analyzed.
+        html_content: The rendered HTML output to save.
+        auto_label: Optional descriptive label (used for autosave on tab transition).
+                    If None, generates a default timestamp-based name.
+    """
     global _saved_versions
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    version_name = f"Version ({lm_model_name}) - {timestamp}"
+    if auto_label:
+        version_name = auto_label
+    else:
+        version_name = f"Version ({lm_model_name}) - {timestamp}"
 
     # Wrap the input text in a stylized box
     text_wrap = f"""

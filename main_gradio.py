@@ -22,7 +22,10 @@ from resume_utility import (
     switch_resume_model,
     initialize_model,              # NEW
     initialize_llama_model,        # NEW
-    llama_model_name               # NEW
+    llama_model_name,              # NEW
+    get_suggested_anchor,          # NEW
+    GENDER_PRESET_TEMPLATE,        # NEW
+    CUSTOM_EXTENDED_TEMPLATE       # NEW
 )
 from image_utility import (
     test_img, 
@@ -111,14 +114,14 @@ def revert_end_prompt():
 
 
 # NEW: Modified process_resume wrapper to handle three inputs and batch analysis
-def process_resume_split(lead, body, end, method, temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code):
+def process_resume_split(lead, body, end, method, temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code, progress=gr.Progress()):
     """Process resume from three separate text inputs, with optional batch analysis."""
     full_text = combine_resume_parts(lead, body, end)
     
     if batch_enabled:
         # Call batch processing function with Faker parameters or custom code
         # NEW: returns (html, batch_results, None, model_display)
-        html, results, _, display = process_batch_resume(full_text, method, temp, batch_token, batch_num_vars, batch_dimension, variations_code)
+        html, results, _, display = process_batch_resume(full_text, method, temp, batch_token, batch_num_vars, batch_dimension, variations_code, progress=progress)
         return html, results, None, None, display, gr.update(visible=False), gr.update(visible=False), gr.update(visible=True, open=True), gr.update(maximum=len(results)-1 if results else 0)
     else:
         # Call regular processing function
@@ -162,16 +165,49 @@ initial_lead, initial_body, initial_end = split_resume_corpus(sample_corpus)
 
 
 # Cell 5: Create the Gradio Interface
-with gr.Blocks(title="Test Auditing Interface") as demo:
+custom_css = """
+.btn-orange {
+    background-color: #f39c12 !important;
+    color: white !important;
+}
+.btn-green {
+    background-color: #27ae60 !important;
+    color: white !important;
+}
+/* Contrast fix for dark mode */
+.dark-text-container {
+    color: #2c3e50 !important;
+}
+.dark-text-container * {
+    color: #2c3e50 !important;
+}
+"""
+with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
     gr.Markdown("# Prototype Auditing Interface")
     gr.Markdown("The following interface is meant to be used for gray-box auditing with access to an explanation. Each tab represents a different type of functionality (resume screening, image captioning, and credit risk) for which you can try out multiple models and interpretability methods.")
     gr.Markdown("# Instructions")
     gr.Markdown("To assess the model, edit the input on the left side and press 'Analyze' to see the output. In the middle column, if applicable, use the 'Explain' feature to see likely attributions. Then press 'Save Current Version' to enable comparison between inputs or models on the right column.")
 
-    with gr.Tabs():
+    # Navbar Row
+    with gr.Row(elem_id="navbar"):
+        nav_resume_btn = gr.Button("Resume Screener", variant="primary")
+        nav_image_btn = gr.Button("Image Captioning", variant="secondary", interactive=False)
+        nav_credit_btn = gr.Button("Credit Risk", variant="secondary", interactive=False)
 
-        # Tab 1: Resume Screener
-        with gr.Tab("Resume Screener"):
+    def navigate(choice):
+        return [
+            gr.update(visible=(choice == "resume")),
+            gr.update(visible=(choice == "image")),
+            gr.update(visible=(choice == "credit")),
+            gr.update(variant="primary" if choice == "resume" else "secondary"),
+            gr.update(variant="primary" if choice == "image" else "secondary"),
+            gr.update(variant="primary" if choice == "credit" else "secondary"),
+        ]
+
+    with gr.Column(): # Main container to keep indentation
+
+        # Section 1: Resume Screener
+        with gr.Column(visible=True) as resume_section:
             continuation_state = gr.State()
             fulltext_state = gr.State()
             # Track the active inner step (0=Input, 1=Results, 2=Compare)
@@ -179,18 +215,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
             # Track whether an analysis has been run (gates the first Next button)
             analysis_done_state = gr.State(value=False)
 
-            gr.Markdown("### Resume Screener")
 
-            # Model selection row (always visible above the step tabs)
-            with gr.Row():
-                resume_model_dropdown = gr.Dropdown(
-                    choices=get_resume_model_choices(),
-                    value=get_resume_model_choices()[0],
-                    label="Select Resume Screening Model",
-                    interactive=True,
-                    scale=3
-                )
-                resume_model_status = gr.Markdown("")
 
             # ── Inner step tabs ──────────────────────────────────────────────
             with gr.Tabs(selected=0) as screener_steps:
@@ -199,93 +224,130 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                 with gr.Tab("Step 1: Input & Configuration", id=0):
                     gr.Markdown("Modify the resume content to identify potential bias across different characteristics (e.g., gender, race, age). Then configure the analysis parameters below.")
 
-                    # Lead Prompt Section
-                    gr.Markdown("#### Lead Prompt (scaffolding before resume)")
-                    resume_lead_input = gr.Textbox(
-                        value=initial_lead,
-                        lines=3,
-                        label="Lead Prompt",
-                        placeholder="Leading instructions or context..."
-                    )
                     with gr.Row():
-                        revert_lead_btn = gr.Button("Revert Lead", variant="secondary", size="sm")
+                        with gr.Column(scale=1):
+                            # Lead Prompt Section
+                            with gr.Accordion("Lead Prompt", open=False):
+                                gr.Markdown("*The part of the prompt given to the model before the resume content.*")
+                                resume_lead_input = gr.Textbox(
+                                    value=initial_lead,
+                                    lines=3,
+                                    label="Lead Prompt",
+                                    placeholder="Leading instructions or context..."
+                                )
+                                with gr.Row():
+                                    revert_lead_btn = gr.Button("Revert Lead", variant="secondary", size="sm")
 
-                    # Main Body Section
-                    gr.Markdown("#### Main Resume Body")
-                    resume_body_input = gr.Textbox(
-                        value=initial_body,
-                        lines=8,
-                        label="Resume Content",
-                        placeholder="Paste the main resume content here..."
-                    )
-                    with gr.Row():
-                        revert_body_btn = gr.Button("Revert Body", variant="secondary", size="sm")
+                            # Main Body Section
+                            gr.Markdown("#### Main Resume Body")
+                            resume_body_input = gr.Textbox(
+                                value=initial_body,
+                                lines=12,
+                                label="Resume Content",
+                                placeholder="Paste the main resume content here..."
+                            )
+                            with gr.Row():
+                                revert_body_btn = gr.Button("Revert Body", variant="secondary", size="sm")
 
-                    # End Prompt Section
-                    gr.Markdown("#### End Prompt (scaffolding after resume)")
-                    resume_end_input = gr.Textbox(
-                        value=initial_end,
-                        lines=3,
-                        label="End Prompt",
-                        placeholder="Closing instructions..."
-                    )
-                    with gr.Row():
-                        revert_end_btn = gr.Button("Revert End", variant="secondary", size="sm")
+                            # End Prompt Section
+                            with gr.Accordion("End Prompt", open=False):
+                                gr.Markdown("*The part of the prompt given to the model after the resume content.*")
+                                resume_end_input = gr.Textbox(
+                                    value=initial_end,
+                                    lines=3,
+                                    label="End Prompt",
+                                    placeholder="Closing instructions..."
+                                )
+                                with gr.Row():
+                                    revert_end_btn = gr.Button("Revert End", variant="secondary", size="sm")
 
-                    temperature_slider = gr.Slider(minimum=0, maximum=1, value=0.45, step=0.01, label="Model Temperature")
+                        with gr.Column(scale=1):
+                            # Model selection (moved here)
+                            with gr.Row():
+                                resume_model_dropdown = gr.Dropdown(
+                                    choices=get_resume_model_choices(),
+                                    value=get_resume_model_choices()[0],
+                                    label="Select Resume Screening Model",
+                                    interactive=True,
+                                    scale=3
+                                )
+                                resume_model_status = gr.Markdown("")
 
-                    gr.Markdown("---")
-                    gr.Markdown("### Analysis Settings")
-                    gr.Markdown("Choose between a single-run analysis or a batch audit of multiple variations.")
-                    batch_analysis_toggle = gr.Checkbox(
-                        label="Enable Batch Analysis",
-                        value=False,
-                        info="Run analysis with LLM-generated variations"
-                    )
+                            temperature_slider = gr.Slider(
+                                minimum=0, maximum=1, value=0.45, step=0.01, 
+                                label="Model Temperature",
+                                info="Controls randomness. Lower values are more deterministic; higher values (up to 1) increase variability."
+                            )
 
-                    batch_num_variations = gr.Slider(
-                        minimum=3, maximum=100, value=20, step=1,
-                        label="Number of Variations",
-                        visible=False,
-                        info="How many variations to test."
-                    )
+                            gr.Markdown("---")
+                            gr.Markdown("### Enable Batch Analysis")
+                            gr.Markdown("**Analyze many variations to understand statistical patterns across demographics**")
+                            batch_analysis_toggle = gr.Checkbox(
+                                label="Enable Batch Audit Mode",
+                                value=False,
+                                info="Run analysis with LLM or Preset variations"
+                            )
 
-                    batch_token_input = gr.Textbox(
-                        label="Token to Vary (Anchor)",
-                        placeholder="e.g., John",
-                        visible=False,
-                        info="Enter the token from your resume that you want to vary."
-                    )
+                            batch_preset_selection = gr.Dropdown(
+                                choices=["Preset: Gender", "Natural Language (LLM)", "Custom Extended"],
+                                value="Preset: Gender",
+                                label="Variation Content Strategy",
+                                visible=False
+                            )
 
-                    batch_nl_input = gr.Textbox(
-                        label="What characteristic or content do you want to audit for bias?",
-                        placeholder="e.g., 'Vary the names to include different religious backgrounds', 'Vary the graduation year to test for age bias'.",
-                        visible=False,
-                        lines=2,
-                        info="Describe how you want to vary the resume to uncover potential discriminatory patterns."
-                    )
+                            batch_num_variations = gr.Slider(
+                                minimum=3, maximum=100, value=20, step=1,
+                                label="Number of Variations",
+                                visible=False,
+                                info="How many variations to test."
+                            )
 
-                    batch_generate_code_btn = gr.Button("Generate Variation Code", variant="secondary", visible=False)
+                            batch_token_input = gr.Textbox(
+                                label="Token to Vary (Anchor)",
+                                placeholder="e.g., John",
+                                visible=False,
+                                info="The word in your resume that will be replaced by variations."
+                            )
 
-                    batch_code_preview = gr.Textbox(
-                        label="Variation Code (Review and Edit)",
-                        placeholder="Generated Python code will appear here...",
-                        lines=8,
-                        visible=False,
-                        interactive=True
-                    )
+                            batch_nl_input = gr.Textbox(
+                                label="What characteristic or content do you want to audit for bias?",
+                                placeholder="e.g., 'Vary the names to include different religious backgrounds'.",
+                                visible=False,
+                                info="Describe how you want to vary the resume."
+                            )
 
-                    with gr.Row():
-                        resume_analyze_btn = gr.Button("Analyze (Single Run)", variant="secondary")
-                        batch_execute_btn = gr.Button("Execute Batch Audit", variant="primary", visible=False)
-                        resume_reset_all_btn = gr.Button("Revert All", variant="secondary")
+                            batch_generate_code_btn = gr.Button("Generate Variation Code", variant="secondary", visible=False)
+
+                            batch_code_preview = gr.Textbox(
+                                label="Variation Code (Review and Edit)",
+                                placeholder="Python code will appear here...",
+                                lines=10,
+                                visible=False,
+                                interactive=True
+                            )
+
+                            gr.Markdown("---")
+                            with gr.Row():
+                                resume_analyze_btn = gr.Button(
+                                    "Analyze (Single Run)", 
+                                    variant="primary", 
+                                    elem_classes=["btn-orange"]
+                                )
+                                batch_execute_btn = gr.Button(
+                                    "Execute Batch Audit", 
+                                    variant="primary", 
+                                    elem_classes=["btn-orange"],
+                                    visible=False
+                                )
+                                resume_reset_all_btn = gr.Button("Revert All", variant="secondary")
 
                     gr.Markdown("---")
                     with gr.Row():
                         step1_next_btn = gr.Button("Next: View Results →", variant="primary", interactive=False)
+                        step1_loading_msg = gr.Markdown("⏳ **Analysis in progress... Please wait.**", visible=False)
 
                 # ── Step 2: Results & Interpretation ────────────────────────
-                with gr.Tab("Step 2: Results & Interpretation", id=1):
+                with gr.Tab("Step 2: Results & Interpretation", id=1, interactive=False) as step2_tab:
                     gr.Markdown("View the model's generated content and explore its decision-making process.")
 
                     resume_current_model_display = gr.Markdown("**Model:** Loading...")
@@ -324,7 +386,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                             value="<p>Select a variation to see details...</p>"
                         )
 
-                        carousel_explain_btn = gr.Button("Explain Selection", variant="primary", interactive=False)
+                        carousel_explain_btn = gr.Button("Explain Selection", variant="primary", interactive=True)
 
                         carousel_explanation_html = gr.HTML(
                             label="Variation Explanation Highlights",
@@ -343,7 +405,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                     autosave_status = gr.Markdown("", visible=False)
 
                 # ── Step 3: Compare & Track ──────────────────────────────────
-                with gr.Tab("Step 3: Compare & Track", id=2):
+                with gr.Tab("Step 3: Compare & Track", id=2, interactive=False) as step3_tab:
                     gr.Markdown("Save versions to track your audit progress and compare different model behaviors side-by-side.")
                     gr.Markdown("*Versions are autosaved when you navigate here from Step 2.*")
 
@@ -352,7 +414,7 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                         label="Select saved version to compare",
                         interactive=True
                     )
-                    resume_clear_btn = gr.Button("Clear Comparison", variant="secondary")
+                    resume_clear_btn = gr.Button("Clear Comparison", variant="secondary", interactive=False)
                     resume_comparison_output = gr.HTML(
                         label="Saved Highlights",
                         value="<p>No comparison loaded. Save a version and select it from the dropdown to compare.</p>"
@@ -421,31 +483,73 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                 outputs=[screener_steps, resume_version_dropdown, autosave_status]
             )
 
-            # Batch UI toggle
-            def update_batch_ui(enabled, num_vars):
+            # Unified Batch UI Toggle
+            def toggle_batch_visibility(enabled, num_vars, preset):
+                # Visibility for common batch elements
+                visibility = gr.update(visible=enabled)
+                
+                # Determine visibility for code-related elements based on preset
+                is_custom = (preset == "Custom")
+                code_box_visibility = gr.update(visible=enabled) # Show code regardless of preset if batch enabled
+                nl_visibility = gr.update(visible=(enabled and is_custom))
+                
                 return (
-                    gr.update(visible=enabled),           # batch_token_input
-                    gr.update(visible=enabled),           # batch_nl_input
-                    gr.update(visible=enabled),           # batch_generate_code_btn
-                    gr.update(visible=enabled),           # batch_code_preview
-                    gr.update(visible=enabled),           # batch_execute_btn
-                    gr.update(visible=enabled),           # batch_num_variations
-                    gr.update(visible=not enabled),       # resume_explain_btn
-                    gr.update(visible=not enabled),       # explanation_html
-                    gr.update(visible=enabled),           # batch_carousel_accordion
-                    gr.update(maximum=num_vars),          # carousel_index_slider
-                    gr.update(interactive=not enabled)    # resume_analyze_btn
+                    visibility, # batch_num_variations
+                    visibility, # batch_token_input
+                    visibility, # batch_preset_selection
+                    visibility, # batch_execute_btn
+                    gr.update(visible=not enabled), # resume_explain_btn
+                    gr.update(visible=not enabled), # explanation_html
+                    gr.update(visible=enabled),     # batch_carousel_accordion
+                    gr.update(maximum=num_vars),    # carousel_index_slider
+                    gr.update(interactive=not enabled), # resume_analyze_btn
+                    nl_visibility, # batch_nl_input
+                    nl_visibility, # batch_generate_code_btn
+                    code_box_visibility # batch_code_preview
                 )
 
             batch_analysis_toggle.change(
-                fn=update_batch_ui,
-                inputs=[batch_analysis_toggle, batch_num_variations],
+                fn=toggle_batch_visibility,
+                inputs=[batch_analysis_toggle, batch_num_variations, batch_preset_selection],
                 outputs=[
-                    batch_token_input, batch_nl_input, batch_generate_code_btn,
-                    batch_code_preview, batch_execute_btn, batch_num_variations,
-                    resume_explain_btn, explanation_html, batch_carousel_accordion, carousel_index_slider,
-                    resume_analyze_btn
+                    batch_num_variations, batch_token_input, batch_preset_selection, 
+                    batch_execute_btn, resume_explain_btn, explanation_html, 
+                    batch_carousel_accordion, carousel_index_slider, resume_analyze_btn,
+                    batch_nl_input, batch_generate_code_btn, batch_code_preview
                 ]
+            )
+
+            # Update presets/search & vary anchor
+            def update_preset_behavior(preset, body, num_vars):
+                anchor = get_suggested_anchor(body)
+                if preset == "Preset: Gender":
+                    code = GENDER_PRESET_TEMPLATE.format(num_vars=num_vars, anchor=anchor)
+                    return (
+                        gr.update(visible=False), # NL input hidden
+                        gr.update(visible=False), # Gen code btn hidden
+                        gr.update(value=code, visible=True), # Code preview shown
+                        gr.update(value=anchor, visible=True) # Anchor pre-filled
+                    )
+                elif preset == "Custom Extended":
+                    code = CUSTOM_EXTENDED_TEMPLATE.format(num_vars=num_vars)
+                    return (
+                        gr.update(visible=False),
+                        gr.update(visible=False),
+                        gr.update(value=code, visible=True),
+                        gr.update(value=anchor, visible=True)
+                    )
+                else: # Natural Language
+                    return (
+                        gr.update(visible=True), # NL input shown
+                        gr.update(visible=True), # Gen code btn shown
+                        gr.update(visible=True), # Code preview shown (empty/result)
+                        gr.update(visible=True)  # Anchor visible
+                    )
+
+            batch_preset_selection.change(
+                fn=update_preset_behavior,
+                inputs=[batch_preset_selection, resume_body_input, batch_num_variations],
+                outputs=[batch_nl_input, batch_generate_code_btn, batch_code_preview, batch_token_input]
             )
 
             # Code Generation Handler
@@ -470,15 +574,27 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                 outputs=[resume_lead_input, resume_body_input, resume_end_input]
             )
 
-            # Analyze button (Single Run) — also enables the Next button and marks analysis as done
+            def start_analysis_loading():
+                return gr.update(visible=False), gr.update(visible=True)
+
             def process_and_enable_next(lead, body, end, method, temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code):
                 results = process_resume_split(lead, body, end, method, temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code)
-                # results = (html, batch_results_state, continuation_state, fulltext_state,
-                #            model_display, explain_btn, explanation_html, batch_carousel, carousel_slider)
-                # Append the enabled Next button state
-                return results + (gr.update(interactive=True),)
+                # results: (html, batch_results_state, continuation_state, fulltext_state,
+                #           model_display, explain_btn, explanation_html, batch_carousel, carousel_slider)
+                
+                # Update Next button (make visible/green) and Tab interactivity
+                return results + (
+                    gr.update(visible=True, interactive=True, elem_classes=["btn-green"]), # step1_next_btn
+                    gr.update(visible=False), # step1_loading_msg
+                    gr.update(interactive=True), # step2_tab
+                    gr.update(interactive=True)  # step3_tab
+                )
 
             resume_analyze_btn.click(
+                fn=start_analysis_loading,
+                inputs=None,
+                outputs=[step1_next_btn, step1_loading_msg]
+            ).then(
                 fn=process_and_enable_next,
                 inputs=[
                     resume_lead_input, resume_body_input, resume_end_input,
@@ -491,12 +607,17 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                     pure_html_output, batch_results_state, continuation_state, fulltext_state,
                     resume_current_model_display, resume_explain_btn, explanation_html,
                     batch_carousel_accordion, carousel_index_slider,
-                    step1_next_btn   # unlock Next button after first analysis
-                ]
+                    step1_next_btn, step1_loading_msg, step2_tab, step3_tab
+                ],
+                show_progress="full"
             )
 
             # Batch Execute Button — also enables the Next button
             batch_execute_btn.click(
+                fn=start_analysis_loading,
+                inputs=None,
+                outputs=[step1_next_btn, step1_loading_msg]
+            ).then(
                 fn=process_and_enable_next,
                 inputs=[
                     resume_lead_input, resume_body_input, resume_end_input,
@@ -509,8 +630,9 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
                     pure_html_output, batch_results_state, continuation_state, fulltext_state,
                     resume_current_model_display, resume_explain_btn, explanation_html,
                     batch_carousel_accordion, carousel_index_slider,
-                    step1_next_btn
-                ]
+                    step1_next_btn, step1_loading_msg, step2_tab, step3_tab
+                ],
+                show_progress="full"
             )
 
             # Carousel event handlers
@@ -586,8 +708,8 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
             )
 
 
-        # Tab 2: Image Captioning
-        with gr.Tab("Image Captioning", interactive=False):
+        # Section 2: Image Captioning
+        with gr.Column(visible=False) as image_section:
             gr.Markdown("### Vision Model Interpretability")
             gr.Markdown("Analyze how vision-language models generate image captions and which visual features they attend to.")
             
@@ -685,8 +807,8 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
             4. For Integrated Gradients, adjust the number of tokens to explain
             """)
 
-        # Tab 3: Credit Risk Analyzer
-        with gr.Tab("Credit Risk Analyzer", interactive=False):
+        # Section 3: Credit Risk Analyzer
+        with gr.Column(visible=False) as credit_section:
             gr.Markdown("### Credit Risk Model Auditor")
             gr.Markdown("Analyze credit risk predictions and understand which factors influence the model's decisions.")
             
@@ -808,6 +930,20 @@ with gr.Blocks(title="Test Auditing Interface") as demo:
             - Use "Scenario Analysis" to explore how changing specific features affects the prediction
             - Export a detailed report for documentation and compliance purposes
             """)
+
+    # Navbar Handlers
+    nav_resume_btn.click(
+        fn=lambda: navigate("resume"),
+        outputs=[resume_section, image_section, credit_section, nav_resume_btn, nav_image_btn, nav_credit_btn]
+    )
+    nav_image_btn.click(
+        fn=lambda: navigate("image"),
+        outputs=[resume_section, image_section, credit_section, nav_resume_btn, nav_image_btn, nav_credit_btn]
+    )
+    nav_credit_btn.click(
+        fn=lambda: navigate("credit"),
+        outputs=[resume_section, image_section, credit_section, nav_resume_btn, nav_image_btn, nav_credit_btn]
+    )
 
 # Cell 6: Launch the interface
 demo.launch(debug=True, share=True)

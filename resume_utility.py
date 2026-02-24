@@ -1312,16 +1312,6 @@ def generate_names_faker(num, dimension='Gender'):
     Returns:
         List of tuples: [(name, category), ...]
     """
-    locales = [
-        ('en_US', 'US English'),
-        ('es_ES', 'Spanish'),
-        ('fr_FR', 'French'),
-        ('de_DE', 'German'),
-        ('it_IT', 'Italian'),
-        ('en_IN', 'English (India)'),
-        ('en_CA', 'English (Canada)')
-    ]
-    
     names = []
     
     # Use a set to track unique names while keeping their categories
@@ -1330,38 +1320,107 @@ def generate_names_faker(num, dimension='Gender'):
     if dimension == 'Gender':
         f = Faker('en_US')
         target_male = num // 2
-        target_female = num - target_male
         
         # Generate male names
-        for _ in range(target_male * 5): # Allow for duplicates
+        for _ in range(target_male * 10): # Allow for duplicates
             if len(unique_names) >= target_male: break
             name = f.first_name_male()
             if name not in unique_names:
                 unique_names[name] = 'Male'
         
         # Generate female names
-        for _ in range(num * 5): # Allow for duplicates
+        for _ in range(num * 10): # Allow for duplicates
             if len(unique_names) >= num: break
             name = f.first_name_female()
             if name not in unique_names:
                 unique_names[name] = 'Female'
-    elif dimension == 'Variety/Ethnicity':
-        for i in range(num * 2):
-            if len(unique_names) >= num: break
-            loc_code, loc_name = locales[i % len(locales)]
-            f = Faker(loc_code)
-            name = f.first_name()
-            if name not in unique_names:
-                unique_names[name] = loc_name
+
     else:
         f = Faker('en_US')
-        for _ in range(num * 2):
+        for _ in range(num * 5):
             if len(unique_names) >= num: break
             name = f.first_name()
             if name not in unique_names:
                 unique_names[name] = 'Random'
     
     return list(unique_names.items())[:num]
+
+
+def get_suggested_anchor(text):
+    """
+    Heuristic to find a likely token to vary (first capitalized word that isn't a section header).
+    """
+    import re
+    # Heuristic: Find common patterns like "Name: [Name]"
+    match = re.search(r'(?:Name|Applicant):\s*([A-Z][a-z]+)', text)
+    if match:
+        return match.group(1)
+    
+    # Fallback: find the first capitalized word that is NOT "Objective", "Experience", etc.
+    exclusions = {"Objective", "Experience", "Education", "Skills", "Summary", "Profile", "Lead", "Resume"}
+    matches = re.findall(r'\b[A-Z][a-z]+\b', text)
+    for m in matches:
+        if m not in exclusions:
+            return m
+    return matches[0] if matches else ""
+
+
+GENDER_PRESET_TEMPLATE = """from faker import Faker
+import json
+
+def generate_names_faker(num, dimension='Gender'):
+    f = Faker('en_US')
+    unique_names = {{}}
+    target_male = num // 2
+    
+    # Male
+    for _ in range(target_male * 10):
+        if len(unique_names) >= target_male: break
+        name = f.first_name_male()
+        if name not in unique_names: unique_names[name] = 'Male'
+    
+    # Female
+    for _ in range(num * 10):
+        if len(unique_names) >= num: break
+        name = f.first_name_female()
+        if name not in unique_names: unique_names[name] = 'Female'
+        
+    return list(unique_names.items())[:num]
+
+# CONFIG
+num_variations = {num_vars}
+dimension = 'Gender'
+
+# GENERATE
+variations = generate_names_faker(num_variations, dimension)
+llama_variations = [ {{ "variation": name, "category": cat }} for name, cat in variations ]
+
+# OUTPUT
+print(json.dumps(llama_variations))
+"""
+
+CUSTOM_EXTENDED_TEMPLATE = """from faker import Faker
+import json
+
+def generate_custom_variations(num):
+    f = Faker('en_US')
+    variations = []
+    # Add your custom logic here!
+    for i in range(num):
+        # Example: vary by something else
+        name = f.first_name()
+        variations.append({{ "variation": name, "category": "Custom" }})
+    return variations
+
+# CONFIG
+num_variations = {num_vars}
+
+# GENERATE
+llama_variations = generate_custom_variations(num_variations)
+
+# OUTPUT
+print(json.dumps(llama_variations))
+"""
 
 def generate_audit_chart(stats, dimension, title=None, ylabel='Number of Variations'):
     """Generate a bar plot for audit results."""
@@ -1807,7 +1866,7 @@ def calculate_statistical_significance(batch_results):
         
     return stats_results
 
-def process_batch_resume(text, method, temperature, batch_token, num_variations, dimension_to_vary, variations_code=None):
+def process_batch_resume(text, method, temperature, batch_token, num_variations, dimension_to_vary, variations_code=None, progress=gr.Progress()):
     """
     Process multiple resume variations.
     
@@ -1861,6 +1920,9 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
     
     # Process variations (removed baseline 'Original' as requested)
     for var_idx, (replacement, category) in enumerate(variations_with_cats):
+        if progress:
+            progress((var_idx) / len(variations_with_cats), desc=f"Analyzing variation {var_idx+1}/{len(variations_with_cats)}: {replacement}...")
+        
         if var_idx % 10 == 0:
             print(f"  Progress: {var_idx}/{len(variations_with_cats)} variations complete")
         
@@ -1932,27 +1994,27 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
     negative_total = sum(1 for r in batch_results if r['sentiment'] == 'negative')
     
     html_output = f"""
-    <div style="padding: 20px; background-color: #f9f9f9; border-radius: 5px; color: #000;">
-        <h3>Batch Analysis Results ({num_runs_per_variation} runs per variation)</h3>
+    <div class="dark-text-container" style="padding: 20px; background-color: #ffffff; border: 1px solid #ddd; border-radius: 5px; color: #2c3e50;">
+        <h3 style="color: #2c3e50; margin-top: 0;">Batch Analysis Results ({num_runs_per_variation} runs per variation)</h3>
         
         <div style="text-align: center; margin: 20px 0;">
             <img src="data:image/png;base64,{chart_cat_base64}" style="max-width: 80%; border: 1px solid #ddd;" />
         </div>
         
-        <div style="margin: 20px 0; padding: 15px; background-color: #e8f4f8; border-left: 4px solid #3498db;">
-            <h4 style="margin-top: 0;">Audit Summary</h4>
-            <p><strong>Total Variations:</strong> {len(batch_results)}</p>
-            <p><strong>Success Rate:</strong> {positive_total/len(batch_results)*100:.1f}%</p>
+        <div style="margin: 20px 0; padding: 15px; background-color: #e8f4f8; border-left: 4px solid #3498db; color: #2c3e50;">
+            <h4 style="margin-top: 0; color: #2c3e50;">Audit Summary</h4>
+            <p style="color: #2c3e50;"><strong>Total Variations:</strong> {len(batch_results)}</p>
+            <p style="color: #2c3e50;"><strong>Success Rate:</strong> {positive_total/len(batch_results)*100:.1f}%</p>
         </div>
         
         <div style="overflow-x: auto;">
-            <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+            <table style="width: 100%; border-collapse: collapse; margin-top: 10px; color: #2c3e50;">
                 <thead>
-                    <tr style="background-color: #ecf0f1;">
-                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Category</th>
-                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Pos Rate</th>
-                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Impact Ratio</th>
-                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Significance (p-value)</th>
+                    <tr style="background-color: #ecf0f1; color: #2c3e50;">
+                        <th style="padding: 10px; border: 1px solid #bdc3c7; color: #2c3e50;">Category</th>
+                        <th style="padding: 10px; border: 1px solid #bdc3c7; color: #2c3e50;">Pos Rate</th>
+                        <th style="padding: 10px; border: 1px solid #bdc3c7; color: #2c3e50;">Impact Ratio</th>
+                        <th style="padding: 10px; border: 1px solid #bdc3c7; color: #2c3e50;">Significance (p-value)</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1977,15 +2039,15 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
             </table>
         </div>
         
-        <h4 style="margin-top: 20px;">Detailed Variations</h4>
+        <h4 style="margin-top: 20px; color: #2c3e50;">Detailed Variations</h4>
         <div style="overflow-x: auto;">
-            <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+            <table style="width: 100%; border-collapse: collapse; margin-top: 10px; color: #2c3e50;">
                 <thead>
-                    <tr style="background-color: #ecf0f1;">
-                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Replacement</th>
-                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Category</th>
-                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Avg Score</th>
-                        <th style="padding: 10px; border: 1px solid #bdc3c7;">Outcome</th>
+                    <tr style="background-color: #ecf0f1; color: #2c3e50;">
+                        <th style="padding: 10px; border: 1px solid #bdc3c7; color: #2c3e50;">Replacement</th>
+                        <th style="padding: 10px; border: 1px solid #bdc3c7; color: #2c3e50;">Category</th>
+                        <th style="padding: 10px; border: 1px solid #bdc3c7; color: #2c3e50;">Avg Score</th>
+                        <th style="padding: 10px; border: 1px solid #bdc3c7; color: #2c3e50;">Outcome</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1994,11 +2056,15 @@ def process_batch_resume(text, method, temperature, batch_token, num_variations,
     for r in batch_results:
         outcome_color = '#27ae60' if r['sentiment'] == 'positive' else '#e74c3c' if r['sentiment'] == 'negative' else '#7f8c8d'
         html_output += f"""
-                    <tr>
-                        <td style="padding: 10px; border: 1px solid #bdc3c7;">{r['variation']}</td>
-                        <td style="padding: 10px; border: 1px solid #bdc3c7;">{r['category']}</td>
-                        <td style="padding: 10px; border: 1px solid #bdc3c7; text-align: center;">{r['avg_score']:.2f}</td>
-                        <td style="padding: 10px; border: 1px solid #bdc3c7; text-align: center; color: {outcome_color}; font-weight: bold;">{r['sentiment'].upper()}</td>
+                    <tr style="color: #2c3e50;">
+                        <td style="padding: 10px; border: 1px solid #bdc3c7; color: #2c3e50;">{r['variation']}</td>
+                        <td style="padding: 10px; border: 1px solid #bdc3c7; color: #2c3e50;">{r['category']}</td>
+                        <td style="padding: 10px; border: 1px solid #bdc3c7; text-align: center; color: #2c3e50;">{r['avg_score']:.2f}</td>
+                        <td style="padding: 10px; border: 1px solid #bdc3c7; text-align: center;">
+                            <span style="background-color: {outcome_color}; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.8em; font-weight: bold;">
+                                {r['sentiment'].upper()}
+                            </span>
+                        </td>
                     </tr>
         """
         

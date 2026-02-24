@@ -49,6 +49,8 @@ from credit_utility import (
     switch_credit_model            # NEW
 )
 
+global has_explanation
+has_explanation = False
 
 # NEW: Function to split sample_corpus into three parts
 def split_resume_corpus(corpus_text):
@@ -359,16 +361,17 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                         choices=["integrated_gradients", "layer_integrated_gradients", "shap"],
                         value="integrated_gradients",
                         label="Explanation Method",
-                        interactive=False
+                        interactive=has_explanation
                     )
-                    resume_explain_btn = gr.Button("Explain", variant='primary', interactive=False, visible=False)
+                    resume_explain_btn = gr.Button("Explain - Button Disabled??", variant='primary', interactive=False, visible=has_explanation)
                     explanation_html = gr.HTML(
                         label="Explanation",
-                        value="<p>No explanation generated. Click 'Explain' to see results...</p>"
+                        value="<p>No explanation generated. Click 'Explain' to see results...</p>",
+                        visible=has_explanation
                     )
 
                     # Batch Interpretation Carousel
-                    with gr.Accordion("Explanations by Variation (Currently Disabled)", open=False, visible=False) as batch_carousel_accordion:
+                    with gr.Accordion("Explanations by Variation (Currently Disabled)", open=False, visible=has_explanation) as batch_carousel_accordion:
                         gr.Markdown("### Variation Explorer")
                         gr.Markdown("Select a variation from your last batch run to see its specific interpretability highlights.")
 
@@ -386,11 +389,12 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                             value="<p>Select a variation to see details...</p>"
                         )
 
-                        carousel_explain_btn = gr.Button("Explain Selection", variant="primary", interactive=True)
+                        carousel_explain_btn = gr.Button("Explain Selection", variant="primary", interactive=has_explanation)
 
                         carousel_explanation_html = gr.HTML(
                             label="Variation Explanation Highlights",
-                            value="<p>Detailed analysis of the selected variation will appear here...</p>"
+                            value="<p>Detailed analysis of the selected variation will appear here...</p>",
+                            visible=has_explanation
                         )
 
                     # Manual save button (still available on Step 2)
@@ -610,6 +614,10 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                     step1_next_btn, step1_loading_msg, step2_tab, step3_tab
                 ],
                 show_progress="full"
+            ).then(
+                fn=lambda: gr.update(interactive=has_explanation),
+                inputs=None,
+                outputs=[resume_explain_btn]
             )
 
             # Batch Execute Button — also enables the Next button

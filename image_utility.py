@@ -14,6 +14,8 @@ from captum.attr import IntegratedGradients, GuidedGradCam, LayerGradCam
 import gradio as gr
 import io
 import traceback
+import tempfile
+import csv
 
 # Try to import LVLM-interpret for advanced features
 try:
@@ -995,7 +997,12 @@ def save_image_version(caption, attribution_pil, original_pil, auto_label=None):
     """
     from datetime import datetime as _dt
     timestamp = _dt.now().strftime("%Y-%m-%d %H:%M")
-    label = auto_label or f"Session | {timestamp}"
+    
+    desc = caption[:30] + "..." if len(caption) > 30 else caption
+    if not desc:
+        desc = "No caption"
+        
+    label = auto_label or f"{desc} | {timestamp}"
 
     _image_versions[label] = {
         "caption": caption or "(no caption)",
@@ -1050,6 +1057,54 @@ def get_image_version_choices():
     """Return saved version labels for the dropdown."""
     return list(_image_versions.keys())
 
+
+def export_all_html():
+    global _image_versions
+    if not _image_versions:
+        return None
+    
+    html = "<html><body style='font-family:sans-serif;padding:20px;'><h1>All Saved Image Variations</h1><hr>"
+    for label, v in _image_versions.items():
+        html += f"<h2>{label}</h2>"
+        attr_html = (f'<img src="{v["attr_b64"]}" style="max-width:400px;border-radius:6px;"/>' if v["attr_b64"] else "")
+        orig_html = (f'<img src="{v["original_b64"]}" style="max-width:400px;border-radius:6px;"/>' if v["original_b64"] else "")
+        html += f"<p><strong>Caption:</strong> {v['caption']}</p><div style='display:flex;gap:20px;'>{orig_html}{attr_html}</div><hr>"
+    html += "</body></html>"
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
+        f.write(html)
+        return f.name
+
+def export_selected_html(label):
+    global _image_versions
+    if not label or label not in _image_versions:
+        return None
+        
+    v = _image_versions[label]
+    attr_html = (f'<img src="{v["attr_b64"]}" style="max-width:400px;border-radius:6px;"/>' if v["attr_b64"] else "")
+    orig_html = (f'<img src="{v["original_b64"]}" style="max-width:400px;border-radius:6px;"/>' if v["original_b64"] else "")
+    
+    html = f"<html><body style='font-family:sans-serif;padding:20px;'><h1>{label}</h1><hr><p><strong>Caption:</strong> {v['caption']}</p><div style='display:flex;gap:20px;'>{orig_html}{attr_html}</div></body></html>"
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
+        f.write(html)
+        return f.name
+
+def export_batch_csv(results_g1, results_g2):
+    if not results_g1 and not results_g2:
+        return None
+        
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode='w', encoding='utf-8', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Group', 'Caption', 'Tokens'])
+        
+        for res in (results_g1 or []):
+            writer.writerow(['Group 1', res.get('caption', ''), ", ".join(res.get('tokens', []))])
+            
+        for res in (results_g2 or []):
+            writer.writerow(['Group 2', res.get('caption', ''), ", ".join(res.get('tokens', []))])
+            
+        return f.name
 
 # -------------------------
 # EXPORT FUNCTIONS

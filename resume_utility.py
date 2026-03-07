@@ -25,6 +25,10 @@ from scipy import stats
 
 fake = Faker()
 
+import traceback
+import tempfile
+import csv
+
 # ============================================================================
 # SHAP-Compatible Output Format
 # ============================================================================
@@ -2132,7 +2136,10 @@ def save_resume_version(text, html_content, auto_label=None):
     if auto_label:
         version_name = auto_label
     else:
-        version_name = f"Version ({lm_model_name}) - {timestamp}"
+        words = str(text).split()
+        short_desc = " ".join(words[:5]) + "..." if len(words) > 5 else str(text)
+        short_desc = short_desc.replace('\n', ' ')
+        version_name = f"{lm_model_name} | {short_desc} | {timestamp}"
 
     # Wrap the input text in a stylized box
     text_wrap = f"""
@@ -2166,4 +2173,46 @@ def load_resume_version(selected):
 
 def clear_resume_comparison():
     """Clear resume comparison view."""
-    return "<p>No comparison loaded. Save a version and select it from the dropdown to compare.</p>"
+    global _saved_versions
+    _saved_versions.clear()
+    return "<p>No comparison loaded. Save a version and select it from the dropdown to compare.</p>", gr.update(choices=[], value=None)
+
+def export_all_html():
+    global _saved_versions
+    if not _saved_versions:
+        return None
+    
+    html = "<html><body><h1>All Saved Resume Variations</h1><hr>"
+    for version_name, data in _saved_versions.items():
+        html += f"<h2>{version_name}</h2>"
+        html += data['html']
+        html += "<hr>"
+    html += "</body></html>"
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
+        f.write(html)
+        path = f.name
+    return path
+
+def export_selected_html(selected):
+    global _saved_versions
+    if not selected or selected not in _saved_versions:
+        return None
+    
+    html = f"<html><body><h1>{selected}</h1><hr>{_saved_versions[selected]['html']}</body></html>"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
+        f.write(html)
+        path = f.name
+    return path
+
+def export_batch_csv(batch_results):
+    if not batch_results:
+        return None
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode='w', encoding='utf-8', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Variation', 'Category', 'Sentiment', 'Avg Score', 'Continuation'])
+        for res in batch_results:
+            writer.writerow([res['variation'], res['category'], res['sentiment'], res['avg_score'], res['continuation']])
+        path = f.name
+    return path

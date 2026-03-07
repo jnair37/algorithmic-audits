@@ -1,12 +1,25 @@
 import torch
 from transformers import AutoProcessor, AutoModelForCausalLM
-from datasets import load_dataset
+import os
+import io
+import base64
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
-from captum.attr import IntegratedGradients
 import gradio as gr
-import io
+
+# Helper functions for version changes and exports
+def on_resume_version_change(selected, batch_enabled, batch_results):
+    show_selected = gr.update(visible=bool(selected))
+    show_csv = gr.update(visible=(batch_enabled and bool(batch_results)))
+    from resume_utility import load_resume_version
+    return load_resume_version(selected), show_selected, show_csv
+
+def on_img_version_change(selected, batch_enabled, res1, res2):
+    show_selected = gr.update(visible=bool(selected))
+    show_csv = gr.update(visible=(batch_enabled and (bool(res1) or bool(res2))))
+    from image_utility import load_image_version
+    return load_image_version(selected), show_selected, show_csv
 from resume_utility import (
     sample_corpus, 
     process_resume,
@@ -249,59 +262,60 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                         gr.Markdown("Modify the resume content to identify potential bias across different characteristics (e.g., gender, race, age). Then configure the analysis parameters below.")
     
                         with gr.Row():
-                            with gr.Column(scale=1):
-                                # Lead Prompt Section
-                                with gr.Accordion("Lead Prompt", open=False):
-                                    gr.Markdown("*The part of the prompt given to the model before the resume content.*")
-                                    resume_lead_input = gr.Textbox(
-                                        value=initial_lead,
-                                        lines=3,
-                                        label="Lead Prompt",
-                                        placeholder="Leading instructions or context..."
+                                with gr.Accordion("2. Edit Input", open=True):
+                                    # Lead Prompt Section
+                                    with gr.Accordion("Lead Prompt", open=False):
+                                        gr.Markdown("*The part of the prompt given to the model before the resume content.*")
+                                        resume_lead_input = gr.Textbox(
+                                            value=initial_lead,
+                                            lines=3,
+                                            label="Lead Prompt",
+                                            placeholder="Leading instructions or context..."
+                                        )
+                                        with gr.Row():
+                                            revert_lead_btn = gr.Button("Revert Lead", variant="secondary", size="sm")
+        
+                                    # Main Body Section
+                                    gr.Markdown("#### Main Resume Body")
+                                    resume_body_input = gr.Textbox(
+                                        value=initial_body,
+                                        lines=12,
+                                        label="Resume Content",
+                                        placeholder="Paste the main resume content here..."
                                     )
                                     with gr.Row():
-                                        revert_lead_btn = gr.Button("Revert Lead", variant="secondary", size="sm")
+                                        revert_body_btn = gr.Button("Revert Body", variant="secondary", size="sm")
+        
+                                    # End Prompt Section
+                                    with gr.Accordion("End Prompt", open=False):
+                                        gr.Markdown("*The part of the prompt given to the model after the resume content.*")
+                                        resume_end_input = gr.Textbox(
+                                            value=initial_end,
+                                            lines=3,
+                                            label="End Prompt",
+                                            placeholder="Closing instructions..."
+                                        )
+                                        with gr.Row():
+                                            revert_end_btn = gr.Button("Revert End", variant="secondary", size="sm")
     
-                                # Main Body Section
-                                gr.Markdown("#### Main Resume Body")
-                                resume_body_input = gr.Textbox(
-                                    value=initial_body,
-                                    lines=12,
-                                    label="Resume Content",
-                                    placeholder="Paste the main resume content here..."
-                                )
-                                with gr.Row():
-                                    revert_body_btn = gr.Button("Revert Body", variant="secondary", size="sm")
-    
-                                # End Prompt Section
-                                with gr.Accordion("End Prompt", open=False):
-                                    gr.Markdown("*The part of the prompt given to the model after the resume content.*")
-                                    resume_end_input = gr.Textbox(
-                                        value=initial_end,
-                                        lines=3,
-                                        label="End Prompt",
-                                        placeholder="Closing instructions..."
-                                    )
-                                    with gr.Row():
-                                        revert_end_btn = gr.Button("Revert End", variant="secondary", size="sm")
-    
-                            with gr.Column(scale=1):
-                                # Model selection (moved here)
-                                with gr.Row():
-                                    resume_model_dropdown = gr.Dropdown(
-                                        choices=get_resume_model_choices(),
-                                        value=get_resume_model_choices()[0],
-                                        label="Select Resume Screening Model",
-                                        interactive=True,
-                                        scale=3
-                                    )
-                                    resume_model_status = gr.Markdown("")
-    
-                                temperature_slider = gr.Slider(
-                                    minimum=0, maximum=1, value=0.45, step=0.01, 
-                                    label="Model Temperature",
-                                    info="Controls randomness. Lower values are more deterministic; higher values (up to 1) increase variability."
-                                )
+                                with gr.Column(scale=1):
+                                    # Model selection (moved here)
+                                    with gr.Accordion("1. Configure Model", open=True):
+                                        with gr.Row():
+                                            resume_model_dropdown = gr.Dropdown(
+                                                choices=get_resume_model_choices(),
+                                                value=get_resume_model_choices()[0],
+                                                label="Select Resume Screening Model",
+                                                interactive=True,
+                                                scale=3
+                                            )
+                                            resume_model_status = gr.Markdown("")
+            
+                                        temperature_slider = gr.Slider(
+                                            minimum=0, maximum=1, value=0.45, step=0.01, 
+                                            label="Model Temperature",
+                                            info="Controls randomness. Lower values are more deterministic; higher values (up to 1) increase variability."
+                                        )
     
                                 gr.Markdown("---")
                                 gr.Markdown("### Enable Batch Analysis")
@@ -441,6 +455,10 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                             interactive=True
                         )
                         resume_clear_btn = gr.Button("Clear Comparison", variant="secondary", interactive=False)
+                        with gr.Row():
+                            resume_download_selected_btn = gr.DownloadButton("Download Selected Trial (HTML)", variant="primary", visible=False)
+                            resume_download_all_btn = gr.DownloadButton("Download All Trials (HTML)", variant="secondary")
+                            resume_download_csv_btn = gr.DownloadButton("Download Batch Results (CSV)", variant="secondary", visible=False)
                         resume_comparison_output = gr.HTML(
                             label="Saved Highlights",
                             value="<p>No comparison loaded. Save a version and select it from the dropdown to compare.</p>"
@@ -720,9 +738,9 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                 )
     
                 resume_version_dropdown.change(
-                    fn=load_resume_version,
-                    inputs=resume_version_dropdown,
-                    outputs=resume_comparison_output
+                    fn=on_resume_version_change,
+                    inputs=[resume_version_dropdown, batch_analysis_toggle, batch_results_state],
+                    outputs=[resume_comparison_output, resume_download_selected_btn, resume_download_csv_btn]
                 )
     
                 resume_clear_btn.click(
@@ -769,25 +787,26 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
     
                         with gr.Row():
                             with gr.Column(scale=1):
-                                img_batch_toggle = gr.Checkbox(
-                                    label="Enable Batch Mode",
-                                    value=False,
-                                    info="Upload multiple images for batch captioning"
-                                )
-    
-                                # Single-image panel
-                                with gr.Column(visible=True) as img_single_panel:
-                                    gr.Markdown("#### Single Image Input")
-                                    gr.Markdown(
-                                        "*Upload an image. Use the brush or eraser to "
-                                        "occlude regions and probe model sensitivity before analysing.*"
+                                with gr.Accordion("2. Edit Input", open=True):
+                                    img_batch_toggle = gr.Checkbox(
+                                        label="Enable Batch Mode",
+                                        value=False,
+                                        info="Upload multiple images for batch captioning"
                                     )
-                                    img_editor = gr.ImageEditor(
-                                        label="Upload or Edit Image",
-                                        type="pil",
-                                        brush=gr.Brush(colors=["#000000", "#FF0000", "#FFFFFF"]),
-                                        eraser=gr.Eraser(),
-                                    )
+        
+                                    # Single-image panel
+                                    with gr.Column(visible=True) as img_single_panel:
+                                        gr.Markdown("#### Single Image Input")
+                                        gr.Markdown(
+                                            "*Upload an image. Use the brush or eraser to "
+                                            "occlude regions and probe model sensitivity before analysing.*"
+                                        )
+                                        img_editor = gr.ImageEditor(
+                                            label="Upload or Edit Image",
+                                            type="pil",
+                                            brush=gr.Brush(colors=["#000000", "#FF0000", "#FFFFFF"]),
+                                            eraser=gr.Eraser(),
+                                        )
     
                                 # Batch-upload panel
                                 with gr.Column(visible=False) as img_batch_panel:
@@ -807,17 +826,28 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                                         img_batch_prompt_g2 = gr.Textbox(label="Group 2: Image Prompt", lines=2)
                                         img_batch_gen_count = gr.Slider(minimum=1, maximum=5, value=2, step=1, label="Images per group (max 5)")
     
-                            with gr.Column(scale=1):
-                                gr.Markdown("#### Analysis Settings")
-                                with gr.Accordion("Attribution Settings", open=True):
-                                    img_opacity_slider = gr.Slider(
-                                        minimum=0.0, maximum=1.0, value=0.6, step=0.05,
-                                        label="Attribution Overlay Opacity"
-                                    )
-                                    img_steps_slider = gr.Slider(
-                                        minimum=10, maximum=100, value=50, step=10,
-                                        label="Integration Steps (more = slower, more accurate)"
-                                    )
+                                with gr.Accordion("1. Configure Model", open=True):
+                                    # Model selection
+                                    with gr.Row():
+                                        image_model_dropdown = gr.Dropdown(
+                                            choices=get_image_model_choices(),
+                                            value=get_image_model_choices()[0],
+                                            label="Select Image Model",
+                                            interactive=True,
+                                            scale=3
+                                        )
+                                        image_model_status = gr.Markdown("")
+                                        
+                                    gr.Markdown("#### Analysis Settings")
+                                    with gr.Accordion("Attribution Settings", open=True):
+                                        img_opacity_slider = gr.Slider(
+                                            minimum=0.0, maximum=1.0, value=0.6, step=0.05,
+                                            label="Attribution Overlay Opacity"
+                                        )
+                                        img_steps_slider = gr.Slider(
+                                            minimum=10, maximum=100, value=50, step=10,
+                                            label="Integration Steps (more = slower, more accurate)"
+                                        )
     
                         gr.Markdown("---")
                         with gr.Row():
@@ -971,7 +1001,11 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                         img_clear_btn = gr.Button(
                             "Clear Comparison", variant="secondary", interactive=False
                         )
-                        img_comparison_out = gr.HTML(
+                        with gr.Row():
+                            img_download_selected_btn = gr.DownloadButton("Download Selected Session (HTML)", variant="primary", visible=False)
+                            img_download_all_btn = gr.DownloadButton("Download All Sessions (HTML)", variant="secondary")
+                            img_download_csv_btn = gr.DownloadButton("Download Batch Results (CSV)", variant="secondary", visible=False)
+                        img_comparison_output = gr.HTML(
                             label="Saved Version",
                             value="<p>No comparison loaded. Save a version and select it from the dropdown.</p>"
                         )
@@ -1236,16 +1270,16 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
     
                 # Step 3: Load comparison
                 img_version_dropdown.change(
-                    fn=load_image_version,
-                    inputs=img_version_dropdown,
-                    outputs=img_comparison_out
+                    fn=on_img_version_change,
+                    inputs=[img_version_dropdown, img_batch_mode, img_batch_results_g1, img_batch_results_g2],
+                    outputs=[img_comparison_output, img_download_selected_btn, img_download_csv_btn]
                 )
     
                 # Step 3: Clear
                 img_clear_btn.click(
                     fn=clear_image_comparison,
                     inputs=None,
-                    outputs=[img_comparison_out, img_version_dropdown]
+                    outputs=[img_comparison_output, img_version_dropdown]
                 )
     
             # Section 3: Credit Risk Analyzer
@@ -1356,13 +1390,6 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                     outputs=credit_export_status
                 )
     
-                # ADDED: Handle model changes
-                credit_model_dropdown.change(
-                    fn=switch_credit_model,
-                    inputs=credit_model_dropdown,
-                    outputs=[credit_model_status, credit_current_model_display]
-                )
-    
                 gr.Markdown("""
                 ### How to Use:
                 - Adjust the sliders to input applicant information
@@ -1371,6 +1398,37 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                 - Use "Scenario Analysis" to explore how changing specific features affects the prediction
                 - Export a detailed report for documentation and compliance purposes
                 """)
+    
+            # --- Global Export Handlers ---
+            from resume_utility import export_all_html as res_export_all, export_selected_html as res_export_selected, export_batch_csv as res_export_csv
+            from image_utility import export_all_html as img_export_all, export_selected_html as img_export_selected, export_batch_csv as img_export_csv
+            
+            # Resume Exports
+            resume_download_all_btn.click(fn=res_export_all, inputs=None, outputs=resume_download_all_btn)
+            
+            resume_download_selected_btn.click(fn=res_export_selected, inputs=resume_version_dropdown, outputs=resume_download_selected_btn)
+            resume_download_csv_btn.click(fn=res_export_csv, inputs=batch_results_state, outputs=resume_download_csv_btn)
+            
+            # Image Exports
+            img_download_all_btn.click(fn=img_export_all, inputs=None, outputs=img_download_all_btn)
+            
+            img_download_selected_btn.click(fn=img_export_selected, inputs=img_version_dropdown, outputs=img_download_selected_btn)
+            img_download_csv_btn.click(fn=img_export_csv, inputs=[img_batch_results_g1, img_batch_results_g2], outputs=img_download_csv_btn)
+            
+            # Image Model change
+            from image_utility import switch_image_model
+            image_model_dropdown.change(
+                fn=switch_image_model,
+                inputs=image_model_dropdown,
+                outputs=[image_model_status, gr.Markdown(visible=False)]
+            )
+            
+            # Credit Model change
+            credit_model_dropdown.change(
+                fn=switch_credit_model,
+                inputs=credit_model_dropdown,
+                outputs=[credit_model_status, credit_current_model_display]
+            )
     
     # Navbar Handlers
     nav_outputs = [intro_page, main_app_layout, resume_section, image_section, credit_section, nav_resume_btn, nav_image_btn, nav_credit_btn]

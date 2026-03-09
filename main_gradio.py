@@ -264,12 +264,12 @@ CALIBRATION_WIDGET_HTML = """
 LEGEND_HTML = """
 <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 4px; font-family: sans-serif; font-size: 0.85em; max-width: 400px;">
     <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="color: #666; font-weight: bold;">Importance:</span>
+        <span style="color: #666; font-weight: bold;">Impact on Response:</span>
         <div style="flex-grow: 1; height: 8px; background: linear-gradient(to right, #440154, #3b528b, #21918c, #5ec962, #fde725); border-radius: 4px;"></div>
     </div>
     <div style="display: flex; justify-content: space-between; color: #888; padding-left: 85px;">
-        <span>Less</span>
-        <span>More</span>
+        <span>More Negative</span>
+        <span>More Positive</span>
     </div>
 </div>
 """
@@ -621,7 +621,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                             gr.HTML(LEGEND_HTML, visible=has_explanation)
     
                         # Batch Interpretation Carousel
-                        with gr.Accordion("Explanations by Variation (Currently Disabled)", open=False, visible=has_explanation) as batch_carousel_accordion:
+                        with gr.Accordion("Explanations by Variation", open=False, visible=has_explanation) as batch_carousel_accordion:
                             gr.Markdown("### Variation Explorer")
                             gr.Markdown("Select a variation from your last batch run to see its specific interpretability highlights.")
     

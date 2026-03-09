@@ -64,7 +64,7 @@ from credit_utility import (
 )
 
 global has_explanation
-has_explanation = False
+has_explanation = True
 
 # NEW: Function to split sample_corpus into three parts
 def split_resume_corpus(corpus_text):
@@ -173,9 +173,9 @@ def create_legend():
     )
     
     # Set labels
-    cb.set_label('Importance', fontsize=12)
+    cb.set_label('Impact on Response', fontsize=12)
     cb.ax.set_xticks([0, 1])
-    cb.ax.set_xticklabels(['Less Important', 'More Important'])
+    cb.ax.set_xticklabels(['More Negative', 'More Positive'])
     
     plt.tight_layout()
     return fig
@@ -289,18 +289,18 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                 gr.Markdown("<br>")
                 with gr.Row():
                     intro_resume_btn = gr.Button("Resume Screener", variant="primary", size="lg")
-                    intro_image_btn = gr.Button("Image Captioning", variant="primary", size="lg")
-                    intro_credit_btn = gr.Button("Credit Risk", variant="primary", size="lg")
+                    intro_image_btn = gr.Button("Image Captioning", variant="primary", size="lg", interactive=False)
+                    intro_credit_btn = gr.Button("Credit Risk", variant="primary", size="lg", interactive=False)
             with gr.Column(scale=1):
                 pass
 
     with gr.Row(visible=False) as main_app_layout:
         with gr.Column(scale=1, min_width=200) as sidebar:
             gr.Markdown("### Navigation")
-            nav_home_btn = gr.Button("🏠 Home", variant="secondary")
+            nav_home_btn = gr.Button("Home", variant="secondary")
             gr.Markdown("---")
             nav_resume_btn = gr.Button("Resume Screener", variant="primary")
-            nav_image_btn = gr.Button("Image Captioning", variant="secondary", interactive=True)
+            nav_image_btn = gr.Button("Image Captioning", variant="secondary", interactive=False)
             nav_credit_btn = gr.Button("Credit Risk", variant="secondary", interactive=False)
 
         def navigate(choice):
@@ -474,7 +474,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                             value="<p>Click 'Analyze' in Step 1 to see results...</p>",
                             elem_classes=["dark-text-contrast"]
                         )
-                        with gr.Accordion("Advanced: Calibrate Explanations", open=False):
+                        with gr.Accordion("Advanced: Calibrate Explanations", open=False, visible=False):
                             gr.Markdown("### Rank what you value in an explanation")
                             gr.HTML(CALIBRATION_WIDGET_HTML)
                             explanation_rank_state = gr.Textbox(value='["Fidelity", "Simplicity", "Robustness"]', visible=False, label="Calibration Rank Status")
@@ -609,7 +609,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                         # Listen for changes in rank state to show "Ranking saved"
                         explanation_rank_state.change(fn=lambda: gr.update(visible=True), outputs=ranking_saved_msg)
 
-                        resume_method_dropdown = gr.State(value="calibrated")
+                        resume_method_dropdown = gr.State(value="integrated_gradients")
                         resume_explain_btn = gr.Button("Explain", variant='primary', interactive=True, visible=has_explanation)
                         with gr.Column():
                             explanation_html = gr.HTML(
@@ -864,7 +864,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                     return gr.update(visible=False), gr.update(visible=True)
     
                 def process_and_enable_next(lead, body, end, rank_order, temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code):
-                    results = process_resume_split(lead, body, end, "calibrated", temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code)
+                    results = process_resume_split(lead, body, end, "integrated_gradients", temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code)
                     # results: (html, batch_results_state, continuation_state, fulltext_state,
                     #           model_display, explain_btn, explanation_html, batch_carousel, carousel_slider)
                     

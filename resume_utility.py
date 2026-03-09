@@ -13,7 +13,6 @@ from PIL import Image
 from captum.attr import IntegratedGradients, NoiseTunnel, Saliency, InputXGradient, FeatureAblation, KernelShap
 from captum.metrics import infidelity, sensitivity_max
 import quantus
-import inseq
 import gradio as gr
 import io
 import base64
@@ -818,139 +817,79 @@ def get_explanation(
         >>> # Model is predicting next token (probably "mat" or "floor")
         >>> # Attribution shows which input tokens influenced this prediction
     """
-    global _inseq_model
     method = method.lower()
-    
-    # Debug print as requested
-    print(f"DEBUG: get_explanation called with method='{method}', target_token_id={target_token_id}, position={position}")
 
-    if _inseq_model is None:
-        print("DEBUG: _inseq_model is None, initializing...")
-        try:
-            # Ensure special tokens are set for Inseq compatibility
-            if tokenizer.eos_token_id is None:
-                if hasattr(tokenizer, 'encoder') and '<|endoftext|>' in tokenizer.encoder:
-                     tokenizer.eos_token = '<|endoftext|>'
-                else:
-                     tokenizer.add_special_tokens({'eos_token': '<|endoftext|>'})
-            
-            if tokenizer.bos_token_id is None:
-                tokenizer.bos_token = tokenizer.eos_token
-                tokenizer.bos_token_id = tokenizer.eos_token_id
-            
-            if tokenizer.pad_token_id is None:
-                tokenizer.pad_token = tokenizer.eos_token
-                tokenizer.pad_token_id = tokenizer.eos_token_id
-            
-            print(f"DEBUG: Tokenizer state: bos={tokenizer.bos_token_id}, eos={tokenizer.eos_token_id}, pad={tokenizer.pad_token_id}")
-                
-            # We wrap the model/tokenizer once. 
-            print("DEBUG: Calling inseq.load_model...")
-            _inseq_model = inseq.load_model(model, tokenizer=tokenizer)
-            print("DEBUG: Inseq model initialized successfully.")
-        except Exception as e:
-            print(f"DEBUG: Failed to initialize inseq model: {type(e).__name__}: {e}")
-            traceback.print_exc()
-    
-    # Map method names to inseq names
-    method_map = {
-        "integrated_gradients": "integrated_gradients",
-        "ig": "integrated_gradients",
-        "saliency": "saliency",
-        "grad": "saliency",
-        "gradient_x_input": "input_x_gradient",
-        "gxi": "input_x_gradient",
-        "layer_integrated_gradients": "layer_integrated_gradients",
-        "lig": "layer_integrated_gradients",
-        "attention": "attention",
-        "attn": "attention",
-        "shap": "gradient_shap"
-    }
-    
-    inseq_method = method_map.get(method, method)
-    print(f"DEBUG: Mapping method '{method}' to Inseq method '{inseq_method}'")
-
-    if method == "shap":
-        try:
-            print("DEBUG: Attempting original SHAP implementation...")
-            return _get_shap_values_causal(text, model, tokenizer)
-        except Exception as e:
-            print(f"DEBUG: SHAP failed, falling back to Inseq {inseq_method}: {e}")
-
-    try:
+    # Route to appropriate method
+    if method == "integrated_gradients" or method == "ig":
         n_steps = kwargs.get('n_steps', 50)
-        
-        # Get logits for base_values and output_names
-        model.eval()
-        with torch.no_grad():
-            inputs = tokenizer(text, return_tensors="pt").to(model.device)
-            outputs = model(**inputs)
-            logits = outputs.logits
-            print(f"DEBUG: outputs.logits shape: {logits.shape}")
-            if logits.ndim == 3:
-                next_token_logits = logits[0, position, :]
-            else:
-                next_token_logits = logits[position, :]
-        
-        print(f"DEBUG: Calling inseq_model.attribute(method='{inseq_method}')")
-        # Inseq attribute returns a FeatureAttributionOutput
-        out = _inseq_model.attribute(
-            input_texts=text,
-            method=inseq_method,
-            n_steps=n_steps,
-            show_progress=False
-        )
-        
-        seq_out = out[0]
-        
-        # Map source attributions
-        # source_attributions shape: (source_len, target_len)
-        attr_scores = seq_out.source_attributions.detach().cpu().numpy()
-        print(f"DEBUG: attr_scores shape: {attr_scores.shape}")
-        
-        # tokens
-        tokens = [t.token for t in seq_out.source]
-        print(f"DEBUG: Attribution complete. Source tokens: {len(tokens)}")
-        
-        # Reshape for UnifiedExplanation compatibility (1, n_tokens, vocab_size)
-        n_tokens = len(tokens)
-        base_values = torch.softmax(next_token_logits, dim=-1).cpu().numpy().reshape(1, -1)
-        vocab_size = base_values.shape[1]
-        
-        values = np.zeros((1, n_tokens, vocab_size))
-        
-        # We take the first target token's attribution
-        if attr_scores.ndim == 2:
-             target_attr = attr_scores[:, 0]
-        elif attr_scores.ndim == 3:
-             target_attr = attr_scores[0, :, 0]
-        else:
-             target_attr = attr_scores
-        
-        # Map to the correct target index in final_values
-        if target_token_id is not None:
-             target_to_fill = target_token_id
-        else:
-             target_to_fill = np.argmax(next_token_logits.cpu().numpy())
-        
-        print(f"DEBUG: Filling attributions for target index {target_to_fill}")
-        values[0, :, target_to_fill] = target_attr
-            
-        # output_names
-        top_tokens, _, _ = _get_top_k_tokens(next_token_logits, tokenizer)
-        output_names = top_tokens
-        
-        return UnifiedExplanation(
-            values=values,
-            data=[tokens],
-            base_values=base_values,
-            output_names=output_names
+        print('calling noise tunnel')
+        attr_scores, tokens, base_values, output_names, logits = _get_integrated_gradients_with_noise_tunnel(
+            text, model, tokenizer, target_token_id, n_steps, position
         )
 
-    except Exception as e:
-        print(f"DEBUG: Inseq attribution failed for {method}: {e}")
-        traceback.print_exc()
-        raise e
+    elif method == "attention" or method == "attn":
+        layer = kwargs.get('layer', -1)
+        attr_scores, tokens, base_values, output_names, logits = _get_attention_weights_causal(
+            text, model, tokenizer, layer, position
+        )
+
+    elif method == "gradient_x_input" or method == "gxi":
+        attr_scores, tokens, base_values, output_names, logits = _get_gradient_x_input_causal(
+            text, model, tokenizer, target_token_id, position
+        )
+
+    elif method == "layer_integrated_gradients" or method == "lig":
+        n_steps = kwargs.get('n_steps', 20)
+        attr_scores, tokens, base_values, output_names, logits = _get_layer_integrated_gradients_causal(
+            text, model, tokenizer, target_token_id, n_steps, position
+        )
+
+    elif method == "shap":
+        shap_values = _get_shap_values_causal(text, model, tokenizer)
+        # SHAP already returns correct format
+        return shap_values
+
+    else:
+        raise ValueError(
+            f"Unknown method: {method}. "
+            f"Choose from: integrated_gradients, attention, gradient_x_input, "
+            f"layer_integrated_gradients, shap"
+        )
+
+    print("DONE CALLING WOOOO")
+    # Convert to SHAP-compatible format
+    n_tokens = len(tokens)
+    vocab_size = len(base_values)
+
+    # Reshape values to match SHAP format: (1, n_tokens, vocab_size)
+    # For efficiency, we only store attributions for the target token
+    values = np.zeros((1, n_tokens, vocab_size))
+    print(np.shape(values))
+
+    print("# tokens")
+    print(n_tokens)
+    print('vocab')
+    print(vocab_size)
+    print("target")
+    print(target_token_id)
+
+    # Assign attribution scores to the target token
+    if target_token_id is not None:
+        values[0, :, target_token_id] = attr_scores
+    else:
+        # Assign to predicted token
+        predicted_token = np.argmax(logits)
+        values[0, :, predicted_token] = attr_scores
+
+    # Create unified explanation object
+    explanation = UnifiedExplanation(
+        values=values,
+        data=[[str(token) for token in tokens]],
+        base_values=base_values.reshape(1, -1),
+        output_names=output_names
+    )
+
+    return explanation
 
 
 # # ============================================================================
@@ -1174,11 +1113,8 @@ the_one_model = 'EleutherAI/gpt-neo-125M'
 sample_corpus = beginning_prompt + resume_text + ending_prompt
 
 lm_model_name = the_one_model
-_model = None
-_tokenizer = None
-_inseq_model = None
-#AutoModelForCausalLM.from_pretrained(lm_model_name)
- #AutoTokenizer.from_pretrained(lm_model_name)
+_model = None #AutoModelForCausalLM.from_pretrained(lm_model_name)
+_tokenizer = None #AutoTokenizer.from_pretrained(lm_model_name)
 
 # ADDED: Model registry
 RESUME_MODELS = {
@@ -1217,30 +1153,10 @@ def initialize_model(model_name=None):
             
             if _tokenizer.pad_token is None:
                 _tokenizer.pad_token = _tokenizer.eos_token
-                
-            # Ensure special tokens are set for Inseq compatibility
-            if _tokenizer.eos_token_id is None:
-                if hasattr(_tokenizer, 'encoder') and '<|endoftext|>' in _tokenizer.encoder:
-                     _tokenizer.eos_token = '<|endoftext|>'
-                else:
-                     _tokenizer.add_special_tokens({'eos_token': '<|endoftext|>'})
-            
-            if _tokenizer.bos_token_id is None:
-                _tokenizer.bos_token = _tokenizer.eos_token
-                _tokenizer.bos_token_id = _tokenizer.eos_token_id
-            
-            if _tokenizer.pad_token_id is None:
-                _tokenizer.pad_token = _tokenizer.eos_token
-                _tokenizer.pad_token_id = _tokenizer.eos_token_id
 
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             _model = _model.to(device)
             _model.eval()
-            
-            # Wrap for Inseq
-            print("DEBUG: Wrapping model with Inseq in initialize_model...")
-            global _inseq_model
-            _inseq_model = inseq.load_model(_model, tokenizer=_tokenizer)
 
             print("!@#$%^&*")
 

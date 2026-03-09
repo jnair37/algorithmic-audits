@@ -988,9 +988,10 @@ def _pil_to_b64(pil_img):
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def save_image_version(caption, attribution_pil, original_pil, auto_label=None):
+def save_image_version(caption, attribution_pil, original_pil, batch_mode=False, batch_graph=None, results_g1=None, results_g2=None, auto_label=None):
     """
     Save a captioning session for later comparison.
+    Supports single image or batch mode results.
 
     Returns:
         status_msg (str), dropdown_update (gr.update)
@@ -1000,14 +1001,35 @@ def save_image_version(caption, attribution_pil, original_pil, auto_label=None):
     
     desc = caption[:30] + "..." if len(caption) > 30 else caption
     if not desc:
-        desc = "No caption"
+        desc = "No caption" if not batch_mode else "Batch Analysis"
         
     label = auto_label or f"{desc} | {timestamp}"
+
+    # Prepare batch data if needed
+    stored_g1 = []
+    stored_g2 = []
+    if batch_mode:
+        if results_g1:
+            for item in results_g1:
+                stored_g1.append({
+                    "caption": item.get("caption", ""),
+                    "img_b64": _pil_to_b64(item.get("image")),
+                })
+        if results_g2:
+            for item in results_g2:
+                stored_g2.append({
+                    "caption": item.get("caption", ""),
+                    "img_b64": _pil_to_b64(item.get("image")),
+                })
 
     _image_versions[label] = {
         "caption": caption or "(no caption)",
         "attr_b64": _pil_to_b64(attribution_pil),
         "original_b64": _pil_to_b64(original_pil),
+        "batch_mode": batch_mode,
+        "graph_b64": _pil_to_b64(batch_graph) if batch_mode else "",
+        "results_g1": stored_g1,
+        "results_g2": stored_g2,
         "timestamp": timestamp,
     }
     choices = list(_image_versions.keys())
@@ -1022,26 +1044,53 @@ def load_image_version(label):
     if not label or label not in _image_versions:
         return "<p>Select a saved version from the dropdown.</p>"
     v = _image_versions[label]
-    attr_html = (
-        f'<img src="{v["attr_b64"]}" style="max-width:100%;border-radius:6px;"/>'
-        if v["attr_b64"]
-        else "<p><em>No attribution heatmap saved.</em></p>"
-    )
-    orig_html = (
-        f'<img src="{v["original_b64"]}" style="max-width:100%;border-radius:6px;"/>'
-        if v["original_b64"]
-        else ""
-    )
-    return f"""
+    
+    html = f"""
     <div style="font-family:sans-serif;padding:12px;background:#fff;color:#000;border-radius:8px;border:1px solid #ddd;">
       <p><strong>Saved:</strong> {label}</p>
-      <p><strong>Caption:</strong> {v['caption']}</p>
-      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;">
-        <div><p style="font-weight:600;margin:0 0 4px">Original</p>{orig_html}</div>
-        <div><p style="font-weight:600;margin:0 0 4px">Attribution Heatmap</p>{attr_html}</div>
-      </div>
-    </div>
+      <p><strong>Timestamp:</strong> {v.get('timestamp', 'N/A')}</p>
     """
+
+    if v.get("batch_mode"):
+        # Batch Display
+        if v.get("graph_b64"):
+            html += f'<div style="margin-bottom:20px;"><p style="font-weight:600;">Word Frequency Comparison</p><img src="{v["graph_b64"]}" style="max-width:100%;border-radius:6px;border:1px solid #eee;"/></div>'
+        
+        for g_idx, group_key in enumerate(["results_g1", "results_g2"]):
+            res_list = v.get(group_key, [])
+            if res_list:
+                html += f'<div><p style="font-weight:600;">Group {g_idx+1} Images</p>'
+                html += '<div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:10px;">'
+                for item in res_list:
+                    html += f"""
+                    <div style="flex:0 0 200px;border:1px solid #eee;padding:8px;border-radius:4px;">
+                        <img src="{item["img_b64"]}" style="width:100%;height:150px;object-fit:cover;border-radius:2px;"/>
+                        <p style="font-size:12px;margin:8px 0 0;line-height:1.2;">{item["caption"]}</p>
+                    </div>
+                    """
+                html += '</div></div>'
+    else:
+        # Single Image Display
+        attr_html = (
+            f'<img src="{v["attr_b64"]}" style="max-width:100%;border-radius:6px;"/>'
+            if v["attr_b64"]
+            else "<p><em>No attribution heatmap saved.</em></p>"
+        )
+        orig_html = (
+            f'<img src="{v["original_b64"]}" style="max-width:100%;border-radius:6px;"/>'
+            if v["original_b64"]
+            else ""
+        )
+        html += f"""
+          <p><strong>Caption:</strong> {v['caption']}</p>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;">
+            <div><p style="font-weight:600;margin:0 0 4px">Original</p>{orig_html}</div>
+            <div><p style="font-weight:600;margin:0 0 4px">Attribution Heatmap</p>{attr_html}</div>
+          </div>
+        """
+    
+    html += "</div>"
+    return html
 
 
 def clear_image_comparison():
@@ -1066,9 +1115,26 @@ def export_all_html():
     html = "<html><body style='font-family:sans-serif;padding:20px;'><h1>All Saved Image Variations</h1><hr>"
     for label, v in _image_versions.items():
         html += f"<h2>{label}</h2>"
-        attr_html = (f'<img src="{v["attr_b64"]}" style="max-width:400px;border-radius:6px;"/>' if v["attr_b64"] else "")
-        orig_html = (f'<img src="{v["original_b64"]}" style="max-width:400px;border-radius:6px;"/>' if v["original_b64"] else "")
-        html += f"<p><strong>Caption:</strong> {v['caption']}</p><div style='display:flex;gap:20px;'>{orig_html}{attr_html}</div><hr>"
+        if v.get("batch_mode"):
+            if v.get("graph_b64"):
+                html += f'<h3>Word Frequency Comparison</h3><img src="{v["graph_b64"]}" style="max-width:800px;border-radius:6px;"/><br>'
+            for g_idx, group_key in enumerate(["results_g1", "results_g2"]):
+                res_list = v.get(group_key, [])
+                if res_list:
+                    html += f'<h4>Group {g_idx+1} Images</h4><div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(200px, 1fr));gap:20px;">'
+                    for item in res_list:
+                        html += f"""
+                        <div style="border:1px solid #ddd;padding:10px;border-radius:6px;">
+                            <img src="{item["img_b64"]}" style="width:100%;border-radius:4px;"/>
+                            <p style="font-size:14px;margin:10px 0 0;">{item["caption"]}</p>
+                        </div>
+                        """
+                    html += "</div>"
+        else:
+            attr_html = (f'<img src="{v["attr_b64"]}" style="max-width:400px;border-radius:6px;"/>' if v["attr_b64"] else "")
+            orig_html = (f'<img src="{v["original_b64"]}" style="max-width:400px;border-radius:6px;"/>' if v["original_b64"] else "")
+            html += f"<p><strong>Caption:</strong> {v['caption']}</p><div style='display:flex;gap:20px;'>{orig_html}{attr_html}</div>"
+        html += "<hr>"
     html += "</body></html>"
     
     with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
@@ -1081,10 +1147,29 @@ def export_selected_html(label):
         return None
         
     v = _image_versions[label]
-    attr_html = (f'<img src="{v["attr_b64"]}" style="max-width:400px;border-radius:6px;"/>' if v["attr_b64"] else "")
-    orig_html = (f'<img src="{v["original_b64"]}" style="max-width:400px;border-radius:6px;"/>' if v["original_b64"] else "")
+    html = f"<html><body style='font-family:sans-serif;padding:20px;'><h1>{label}</h1><hr>"
     
-    html = f"<html><body style='font-family:sans-serif;padding:20px;'><h1>{label}</h1><hr><p><strong>Caption:</strong> {v['caption']}</p><div style='display:flex;gap:20px;'>{orig_html}{attr_html}</div></body></html>"
+    if v.get("batch_mode"):
+        if v.get("graph_b64"):
+            html += f'<h3>Word Frequency Comparison</h3><img src="{v["graph_b64"]}" style="max-width:800px;border-radius:6px;"/><br>'
+        for g_idx, group_key in enumerate(["results_g1", "results_g2"]):
+            res_list = v.get(group_key, [])
+            if res_list:
+                html += f'<h4>Group {g_idx+1} Images</h4><div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(250px, 1fr));gap:20px;">'
+                for item in res_list:
+                    html += f"""
+                    <div style="border:1px solid #ddd;padding:15px;border-radius:8px;">
+                        <img src="{item["img_b64"]}" style="width:100%;border-radius:6px;"/>
+                        <p style="font-size:16px;margin:12px 0 0;">{item["caption"]}</p>
+                    </div>
+                    """
+                html += "</div>"
+    else:
+        attr_html = (f'<img src="{v["attr_b64"]}" style="max-width:400px;border-radius:6px;"/>' if v["attr_b64"] else "")
+        orig_html = (f'<img src="{v["original_b64"]}" style="max-width:400px;border-radius:6px;"/>' if v["original_b64"] else "")
+        html += f"<p><strong>Caption:</strong> {v['caption']}</p><div style='display:flex;gap:20px;'>{orig_html}{attr_html}</div>"
+        
+    html += "</body></html>"
     
     with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
         f.write(html)

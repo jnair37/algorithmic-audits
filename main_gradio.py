@@ -41,7 +41,6 @@ from resume_utility import (
     CUSTOM_EXTENDED_TEMPLATE       # NEW
 )
 from image_utility import (
-    # BLIP / LVLM-Interpret functions
     blip_generate_caption_only,
     blip_analyze_image,
     blip_occlude_then_analyze,
@@ -50,6 +49,8 @@ from image_utility import (
     load_image_version,
     clear_image_comparison,
     get_image_version_choices,
+    get_image_model_choices,       # NEW
+    switch_image_model,             # NEW
 )
 from credit_utility import (
     sample_credit_data, 
@@ -146,10 +147,15 @@ def process_resume_split(lead, body, end, method, temp, batch_enabled, batch_tok
 
 
 # NEW: Modified explain_resume wrapper to handle three inputs
-def explain_resume_split(lead, body, end, continuation_state, fulltext_state, method):
+def explain_resume_split(lead, body, end, continuation_state, fulltext_state, method, rank_order_json):
     """Explain resume from three separate text inputs."""
     full_text = combine_resume_parts(lead, body, end)
-    return explain_resume(full_text, continuation_state, fulltext_state, method)
+    import json
+    try:
+        rank_order = json.loads(rank_order_json)
+    except:
+        rank_order = ["Fidelity", "Simplicity", "Robustness"]
+    return explain_resume(full_text, continuation_state, fulltext_state, method, rank_order=rank_order)
 
 
 def create_legend():
@@ -181,6 +187,46 @@ initial_lead, initial_body, initial_end = split_resume_corpus(sample_corpus)
 
 # Cell 5: Create the Gradio Interface
 custom_css = """
+/* Calibration Widget Styles */
+#sortable-list {
+    list-style-type: none;
+    padding: 0;
+}
+.sortable-item {
+    background-color: #f1f1f1;
+    border: 1px solid #ccc;
+    padding: 10px;
+    margin-bottom: 5px;
+    cursor: move;
+    border-radius: 4px;
+    color: #333;
+    font-weight: 500;
+}
+.sortable-item:hover {
+    background-color: #e1e1e1;
+}
+.sortable-item.dragging {
+    opacity: 0.5;
+}
+.item-subtitle {
+    font-size: 0.85em;
+    color: #444; /* Darker for better contrast */
+    font-weight: normal;
+    margin-top: 2px;
+    line-height: 1.25;
+}
+.sortable-item strong {
+    color: #111; /* Very dark for main tags */
+    display: block;
+    margin-bottom: 2px;
+}
+/* Ensure model results and variation text is dark enough */
+.dark-text-contrast {
+    color: #222 !important;
+}
+.dark-text-contrast strong {
+    color: #000 !important;
+}
 .btn-orange {
     background-color: #f39c12 !important;
     color: white !important;
@@ -196,6 +242,36 @@ custom_css = """
 .dark-text-container * {
     color: #2c3e50 !important;
 }
+"""
+
+CALIBRATION_WIDGET_HTML = """
+<div id="calibration-rank-container">
+    <div class="draggable" draggable="true" data-value="Fidelity">
+        <strong>Fidelity</strong>
+        <div class="item-subtitle">the explanation will adhere to exactly what the model actually considers</div>
+    </div>
+    <div class="draggable" draggable="true" data-value="Simplicity">
+        <strong>Simplicity</strong>
+        <div class="item-subtitle">easy for humans to understand, not overcomplicated by too many features</div>
+    </div>
+    <div class="draggable" draggable="true" data-value="Robustness">
+        <strong>Robustness</strong>
+        <div class="item-subtitle">not vulnerable to <a href="https://arxiv.org/abs/1806.08049" target="_blank" style="color: #2980b9; text-decoration: underline;">adversarial perturbation attacks</a> (click for paper)</div>
+    </div>
+</div>
+"""
+
+LEGEND_HTML = """
+<div style="margin-top: 10px; display: flex; flex-direction: column; gap: 4px; font-family: sans-serif; font-size: 0.85em; max-width: 400px;">
+    <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="color: #666; font-weight: bold;">Importance:</span>
+        <div style="flex-grow: 1; height: 8px; background: linear-gradient(to right, #440154, #3b528b, #21918c, #5ec962, #fde725); border-radius: 4px;"></div>
+    </div>
+    <div style="display: flex; justify-content: space-between; color: #888; padding-left: 85px;">
+        <span>Less</span>
+        <span>More</span>
+    </div>
+</div>
 """
 with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
     with gr.Column(visible=True) as intro_page:
@@ -262,122 +338,126 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                         gr.Markdown("Modify the resume content to identify potential bias across different characteristics (e.g., gender, race, age). Then configure the analysis parameters below.")
     
                         with gr.Row():
-                                with gr.Accordion("2. Edit Input", open=True):
-                                    # Lead Prompt Section
-                                    with gr.Accordion("Lead Prompt", open=False):
-                                        gr.Markdown("*The part of the prompt given to the model before the resume content.*")
-                                        resume_lead_input = gr.Textbox(
-                                            value=initial_lead,
-                                            lines=3,
-                                            label="Lead Prompt",
-                                            placeholder="Leading instructions or context..."
-                                        )
-                                        with gr.Row():
-                                            revert_lead_btn = gr.Button("Revert Lead", variant="secondary", size="sm")
-        
-                                    # Main Body Section
-                                    gr.Markdown("#### Main Resume Body")
-                                    resume_body_input = gr.Textbox(
-                                        value=initial_body,
-                                        lines=12,
-                                        label="Resume Content",
-                                        placeholder="Paste the main resume content here..."
-                                    )
-                                    with gr.Row():
-                                        revert_body_btn = gr.Button("Revert Body", variant="secondary", size="sm")
-        
-                                    # End Prompt Section
-                                    with gr.Accordion("End Prompt", open=False):
-                                        gr.Markdown("*The part of the prompt given to the model after the resume content.*")
-                                        resume_end_input = gr.Textbox(
-                                            value=initial_end,
-                                            lines=3,
-                                            label="End Prompt",
-                                            placeholder="Closing instructions..."
-                                        )
-                                        with gr.Row():
-                                            revert_end_btn = gr.Button("Revert End", variant="secondary", size="sm")
-    
-                                with gr.Column(scale=1):
-                                    # Model selection (moved here)
-                                    with gr.Accordion("1. Configure Model", open=True):
-                                        with gr.Row():
-                                            resume_model_dropdown = gr.Dropdown(
-                                                choices=get_resume_model_choices(),
-                                                value=get_resume_model_choices()[0],
-                                                label="Select Resume Screening Model",
-                                                interactive=True,
-                                                scale=3
-                                            )
-                                            resume_model_status = gr.Markdown("")
-            
-                                        temperature_slider = gr.Slider(
-                                            minimum=0, maximum=1, value=0.45, step=0.01, 
-                                            label="Model Temperature",
-                                            info="Controls randomness. Lower values are more deterministic; higher values (up to 1) increase variability."
-                                        )
-    
-                                gr.Markdown("---")
-                                gr.Markdown("### Enable Batch Analysis")
-                                gr.Markdown("**Analyze many variations to understand statistical patterns across demographics**")
-                                batch_analysis_toggle = gr.Checkbox(
-                                    label="Enable Batch Audit Mode",
-                                    value=False,
-                                    info="Run analysis with LLM or Preset variations"
-                                )
-    
-                                batch_preset_selection = gr.Dropdown(
-                                    choices=["Preset: Gender", "Natural Language (LLM)", "Custom Extended"],
-                                    value="Preset: Gender",
-                                    label="Variation Content Strategy",
-                                    visible=False
-                                )
-    
-                                batch_num_variations = gr.Slider(
-                                    minimum=3, maximum=100, value=20, step=1,
-                                    label="Number of Variations",
-                                    visible=False,
-                                    info="How many variations to test."
-                                )
-    
-                                batch_token_input = gr.Textbox(
-                                    label="Token to Vary (Anchor)",
-                                    placeholder="e.g., John",
-                                    visible=False,
-                                    info="The word in your resume that will be replaced by variations."
-                                )
-    
-                                batch_nl_input = gr.Textbox(
-                                    label="What characteristic or content do you want to audit for bias?",
-                                    placeholder="e.g., 'Vary the names to include different religious backgrounds'.",
-                                    visible=False,
-                                    info="Describe how you want to vary the resume."
-                                )
-    
-                                batch_generate_code_btn = gr.Button("Generate Variation Code", variant="secondary", visible=False)
-    
-                                batch_code_preview = gr.Textbox(
-                                    label="Variation Code (Review and Edit)",
-                                    placeholder="Python code will appear here...",
-                                    lines=10,
-                                    visible=False,
-                                    interactive=True
-                                )
-    
-                                gr.Markdown("---")
+                            with gr.Column(scale=1):
+                                # Model selection (moved here)
+                                gr.Markdown("### 1. Configure Model")
                                 with gr.Row():
-                                    resume_analyze_btn = gr.Button(
-                                        "Analyze (Single Run)", 
-                                        variant="primary", 
-                                        elem_classes=["btn-orange"]
+                                    resume_model_dropdown = gr.Dropdown(
+                                        choices=get_resume_model_choices(),
+                                        value=get_resume_model_choices()[0],
+                                        label="Select Resume Screening Model",
+                                        interactive=True,
+                                        scale=3
                                     )
-                                    batch_execute_btn = gr.Button(
-                                        "Execute Batch Audit", 
-                                        variant="primary", 
-                                        elem_classes=["btn-orange"],
-                                        visible=False
-                                    )
-                                    resume_reset_all_btn = gr.Button("Revert All", variant="secondary")
+                                    resume_model_status = gr.Markdown("")
+        
+                                temperature_slider = gr.Number(
+                                    label="Model Temperature",
+                                    value=0.45,
+                                    precision=2,
+                                    info="Controls randomness. Lower values are more deterministic; higher values (up to 1) increase variability."
+                                )
+
+                            with gr.Column(scale=2):
+                                gr.Markdown("### 2. Edit Input")
+                                # Lead Prompt Section
+                                gr.Markdown("#### Lead Prompt")
+                                gr.Markdown("*The part of the prompt given to the model before the resume content.*")
+                                resume_lead_input = gr.Textbox(
+                                    value=initial_lead,
+                                    lines=3,
+                                    label="Lead Prompt",
+                                    placeholder="Leading instructions or context..."
+                                )
+                                with gr.Row():
+                                    revert_lead_btn = gr.Button("Revert Lead", variant="secondary", size="sm")
+
+                                # Main Body Section
+                                gr.Markdown("#### Main Resume Body")
+                                resume_body_input = gr.Textbox(
+                                    value=initial_body,
+                                    lines=12,
+                                    label="Resume Content",
+                                    placeholder="Paste the main resume content here..."
+                                )
+                                with gr.Row():
+                                    revert_body_btn = gr.Button("Revert Body", variant="secondary", size="sm")
+
+                                # End Prompt Section
+                                gr.Markdown("#### End Prompt")
+                                gr.Markdown("*The part of the prompt given to the model after the resume content.*")
+                                resume_end_input = gr.Textbox(
+                                    value=initial_end,
+                                    lines=3,
+                                    label="End Prompt",
+                                    placeholder="Closing instructions..."
+                                )
+                                with gr.Row():
+                                    revert_end_btn = gr.Button("Revert End", variant="secondary", size="sm")
+    
+                        gr.Markdown("---")
+                        gr.Markdown("### Enable Batch Analysis")
+                        gr.Markdown("**Analyze many variations to understand statistical patterns across demographics**")
+                        batch_analysis_toggle = gr.Checkbox(
+                            label="Enable Batch Audit Mode",
+                            value=False,
+                            info="Run analysis with LLM or Preset variations"
+                        )
+    
+                        batch_preset_selection = gr.Dropdown(
+                            choices=["Preset: Gender", "Natural Language (LLM)", "Custom Extended"],
+                            value="Preset: Gender",
+                            label="Variation Content Strategy",
+                            visible=False
+                        )
+    
+                        batch_num_variations = gr.Number(
+                            label="Number of Variations",
+                            value=20,
+                            precision=0,
+                            visible=False,
+                            info="How many variations to test."
+                        )
+    
+                        batch_token_input = gr.Textbox(
+                            label="Token to Vary (Anchor) - *this token will be changed for each item in the batch*",
+                            placeholder="e.g., Jane",
+                            value="Jane",
+                            visible=False,
+                            info="The word in your resume that will be replaced by variations."
+                        )
+    
+                        batch_nl_input = gr.Textbox(
+                            label="What characteristic or content do you want to audit for bias?",
+                            placeholder="e.g., 'Vary the names to include different religious backgrounds'.",
+                            visible=False,
+                            info="Describe how you want to vary the resume."
+                        )
+    
+                        batch_generate_code_btn = gr.Button("Generate Variation Code", variant="secondary", visible=False)
+    
+                        batch_code_preview = gr.Textbox(
+                            label="Variation Code (Review and Edit)",
+                            placeholder="Python code will appear here...",
+                            lines=10,
+                            visible=False,
+                            interactive=True
+                        )
+    
+                        gr.Markdown("---")
+                        with gr.Row():
+                            resume_analyze_btn = gr.Button(
+                                "Analyze (Single Run)", 
+                                variant="primary", 
+                                elem_classes=["btn-orange"]
+                            )
+                            batch_execute_btn = gr.Button(
+                                "Execute Batch Audit", 
+                                variant="primary", 
+                                elem_classes=["btn-orange"],
+                                visible=False
+                            )
+                            resume_reset_all_btn = gr.Button("Revert All", variant="secondary")
     
                         gr.Markdown("---")
                         with gr.Row():
@@ -391,20 +471,154 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                         resume_current_model_display = gr.Markdown("**Model:** Loading...")
                         pure_html_output = gr.HTML(
                             label="Model Output",
-                            value="<p>Click 'Analyze' in Step 1 to see results...</p>"
+                            value="<p>Click 'Analyze' in Step 1 to see results...</p>",
+                            elem_classes=["dark-text-contrast"]
                         )
-                        resume_method_dropdown = gr.Dropdown(
-                            choices=["integrated_gradients", "layer_integrated_gradients", "shap"],
-                            value="integrated_gradients",
-                            label="Explanation Method",
-                            interactive=has_explanation
-                        )
-                        resume_explain_btn = gr.Button("Explain - Button Disabled??", variant='primary', interactive=False, visible=has_explanation)
-                        explanation_html = gr.HTML(
-                            label="Explanation",
-                            value="<p>No explanation generated. Click 'Explain' to see results...</p>",
-                            visible=has_explanation
-                        )
+                        with gr.Accordion("Advanced: Calibrate Explanations", open=False):
+                            gr.Markdown("### Rank what you value in an explanation")
+                            gr.HTML(CALIBRATION_WIDGET_HTML)
+                            explanation_rank_state = gr.Textbox(value='["Fidelity", "Simplicity", "Robustness"]', visible=False, label="Calibration Rank Status")
+                            ranking_saved_msg = gr.Markdown("**Ranking saved**", visible=False)
+                            
+                            # JavaScript helper to sync the rank string from the HTML widget to the Gradio textbox
+                            demo.load(None, None, None, js="""
+                                () => {
+                                    window.updateCalibrationRank = (rankStr) => {
+                                        const textbox = document.querySelector('textarea[label="Calibration Rank Status"]');
+                                        if (textbox) {
+                                            textbox.value = rankStr;
+                                            textbox.dispatchEvent(new Event('input'));
+                                        }
+                                        // Show the "Ranking saved" message by triggering the Markdown visibility
+                                        // In Gradio, we'll use the change event on the textbox to handle this in Python
+                                    };
+                                    // Initialize the drag-and-drop functionality
+                                    const initDragAndDrop = () => {
+                                        const container = document.getElementById('calibration-rank-container');
+                                        if (!container) return;
+
+                                        let draggedItem = null;
+
+                                        container.addEventListener('dragstart', (e) => {
+                                            draggedItem = e.target;
+                                            e.dataTransfer.effectAllowed = 'move';
+                                            e.dataTransfer.setData('text/plain', e.target.dataset.value);
+                                            setTimeout(() => {
+                                                e.target.classList.add('dragging');
+                                            }, 0);
+                                        });
+
+                                        container.addEventListener('dragover', (e) => {
+                                            e.preventDefault();
+                                            const afterElement = getDragAfterElement(container, e.clientY);
+                                            const currentDragging = document.querySelector('.dragging');
+                                            if (currentDragging === null) return; // No item being dragged
+
+                                            if (afterElement == null) {
+                                                container.appendChild(currentDragging);
+                                            } else {
+                                                container.insertBefore(currentDragging, afterElement);
+                                            }
+                                        });
+
+                                        container.addEventListener('dragend', (e) => {
+                                            e.target.classList.remove('dragging');
+                                            draggedItem = null;
+                                            updateRankAndNotify();
+                                        });
+
+                                        const getDragAfterElement = (container, y) => {
+                                            const draggableElements = [...container.querySelectorAll('.draggable:not(.dragging)')];
+                                            return draggableElements.reduce((closest, child) => {
+                                                const box = child.getBoundingClientRect();
+                                                const offset = y - box.top - box.height / 2;
+                                                if (offset < 0 && offset > closest.offset) {
+                                                    return { offset: offset, element: child };
+                                                } else {
+                                                    return closest;
+                                                }
+                                            }, { offset: -Number.POSITIVE_INFINITY }).element;
+                                        };
+
+                                        const updateRankAndNotify = () => {
+                                            const newRank = Array.from(container.children)
+                                                                 .filter(child => child.classList.contains('draggable'))
+                                                                 .map(child => child.dataset.value);
+                                            window.updateCalibrationRank(JSON.stringify(newRank));
+                                        };
+
+                                        // Initial update
+                                        updateRankAndNotify();
+                                    };
+
+                                    // Run initialization after Gradio components are rendered
+                                    // Use a MutationObserver to detect when the container is added to the DOM
+                                    const observer = new MutationObserver((mutationsList, observer) => {
+                                        for (const mutation of mutationsList) {
+                                            if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+                                                const container = document.getElementById('calibration-rank-container');
+                                                if (container) {
+                                                    initDragAndDrop();
+                                                    observer.disconnect(); // Stop observing once initialized
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    });
+
+                                    // Start observing the body for changes
+                                    observer.observe(document.body, { childList: true, subtree: true });
+
+                                    // Inject CSS for better contrast and dragging
+                                    const style = document.createElement('style');
+                                    style.innerHTML = `
+                                        #calibration-rank-container {
+                                            display: flex;
+                                            flex-direction: column;
+                                            gap: 8px;
+                                            padding: 10px;
+                                            border: 1px solid #ccc;
+                                            border-radius: 4px;
+                                            background-color: #f9f9f9;
+                                        }
+                                        .draggable {
+                                            padding: 10px 15px;
+                                            background-color: #e0e0e0; /* Darker grey */
+                                            border: 1px solid #b0b0b0; /* Darker border */
+                                            border-radius: 4px;
+                                            cursor: grab;
+                                            font-weight: 500;
+                                            color: #333; /* Darker text for contrast */
+                                            transition: background-color 0.2s, border-color 0.2s, transform 0.1s;
+                                            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                                        }
+                                        .draggable:hover {
+                                            background-color: #d0d0d0; /* Even darker on hover */
+                                            border-color: #909090;
+                                        }
+                                        .draggable.dragging {
+                                            opacity: 0.6;
+                                            transform: scale(1.02);
+                                            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+                                        }
+                                    `;
+                                    document.head.appendChild(style);
+                                }
+                            """)
+
+                        # Listen for changes in rank state to show "Ranking saved"
+                        explanation_rank_state.change(fn=lambda: gr.update(visible=True), outputs=ranking_saved_msg)
+
+                        resume_method_dropdown = gr.State(value="calibrated")
+                        resume_explain_btn = gr.Button("Explain", variant='primary', interactive=True, visible=has_explanation)
+                        with gr.Column():
+                            explanation_html = gr.HTML(
+                                label="Explanation",
+                                value="<p>No explanation generated. Click 'Explain' to see results...</p>",
+                                visible=has_explanation,
+                                elem_classes=["dark-text-contrast"]
+                            )
+                            gr.HTML(LEGEND_HTML, visible=has_explanation)
     
                         # Batch Interpretation Carousel
                         with gr.Accordion("Explanations by Variation (Currently Disabled)", open=False, visible=has_explanation) as batch_carousel_accordion:
@@ -414,10 +628,11 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                             batch_results_state = gr.State([])
     
                             with gr.Row():
-                                carousel_index_slider = gr.Slider(
-                                    minimum=0, maximum=19, value=0, step=1,
-                                    label="Select Variation index",
-                                    interactive=False
+                                carousel_index_slider = gr.Number(
+                                    label="Select Variation Index",
+                                    value=0,
+                                    precision=0,
+                                    interactive=True
                                 )
     
                             carousel_preview_html = gr.HTML(
@@ -425,13 +640,16 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                                 value="<p>Select a variation to see details...</p>"
                             )
     
-                            carousel_explain_btn = gr.Button("Explain Selection", variant="primary", interactive=has_explanation)
+                            carousel_explain_btn = gr.Button("Explain Selection", variant="primary", interactive=True)
     
-                            carousel_explanation_html = gr.HTML(
-                                label="Variation Explanation Highlights",
-                                value="<p>Detailed analysis of the selected variation will appear here...</p>",
-                                visible=has_explanation
-                            )
+                            with gr.Column():
+                                carousel_explanation_html = gr.HTML(
+                                    label="Variation Explanation Highlights",
+                                    value="<p>Detailed analysis of the selected variation will appear here...</p>",
+                                    visible=has_explanation,
+                                    elem_classes=["dark-text-contrast"]
+                                )
+                                gr.HTML(LEGEND_HTML, visible=has_explanation)
     
                         # Manual save button (still available on Step 2)
                         with gr.Row():
@@ -449,20 +667,43 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                         gr.Markdown("Save versions to track your audit progress and compare different model behaviors side-by-side.")
                         gr.Markdown("*Versions are autosaved when you navigate here from Step 2.*")
     
-                        resume_version_dropdown = gr.Dropdown(
-                            choices=[],
-                            label="Select saved version to compare",
-                            interactive=True
-                        )
-                        resume_clear_btn = gr.Button("Clear Comparison", variant="secondary", interactive=False)
                         with gr.Row():
-                            resume_download_selected_btn = gr.DownloadButton("Download Selected Trial (HTML)", variant="primary", visible=False)
+                            with gr.Column():
+                                gr.Markdown("#### Comparison Column A")
+                                resume_version_dropdown_a = gr.Dropdown(
+                                    choices=[],
+                                    label="Select version A",
+                                    interactive=True
+                                )
+                                with gr.Row():
+                                    resume_clear_btn_a = gr.Button("Clear A", variant="secondary", size="sm")
+                                    resume_download_selected_btn_a = gr.DownloadButton("Download A (HTML)", variant="primary", visible=False, size="sm")
+                                
+                                resume_comparison_output_a = gr.HTML(
+                                    label="Saved Highlights A",
+                                    value="<p>Select a version to compare.</p>"
+                                )
+
+                            with gr.Column():
+                                gr.Markdown("#### Comparison Column B")
+                                resume_version_dropdown_b = gr.Dropdown(
+                                    choices=[],
+                                    label="Select version B",
+                                    interactive=True
+                                )
+                                with gr.Row():
+                                    resume_clear_btn_b = gr.Button("Clear B", variant="secondary", size="sm")
+                                    resume_download_selected_btn_b = gr.DownloadButton("Download B (HTML)", variant="primary", visible=False, size="sm")
+                                
+                                resume_comparison_output_b = gr.HTML(
+                                    label="Saved Highlights B",
+                                    value="<p>Select a version to compare.</p>"
+                                )
+
+                        gr.Markdown("---")
+                        with gr.Row():
                             resume_download_all_btn = gr.DownloadButton("Download All Trials (HTML)", variant="secondary")
                             resume_download_csv_btn = gr.DownloadButton("Download Batch Results (CSV)", variant="secondary", visible=False)
-                        resume_comparison_output = gr.HTML(
-                            label="Saved Highlights",
-                            value="<p>No comparison loaded. Save a version and select it from the dropdown to compare.</p>"
-                        )
     
                         gr.Markdown("---")
                         with gr.Row():
@@ -513,7 +754,8 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
     
                     return (
                         gr.update(selected=2),            # switch to step 3
-                        dropdown_update,                  # refresh version dropdown
+                        dropdown_update,                  # refresh version dropdown A
+                        dropdown_update,                  # refresh version dropdown B
                         gr.update(value=f"Autosaved: *{auto_label}*", visible=True),  # show autosave notice
                     )
     
@@ -524,7 +766,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                         pure_html_output, explanation_html,
                         batch_analysis_toggle, batch_results_state
                     ],
-                    outputs=[screener_steps, resume_version_dropdown, autosave_status]
+                    outputs=[screener_steps, resume_version_dropdown_a, resume_version_dropdown_b, autosave_status]
                 )
     
                 # Unified Batch UI Toggle
@@ -621,8 +863,8 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                 def start_analysis_loading():
                     return gr.update(visible=False), gr.update(visible=True)
     
-                def process_and_enable_next(lead, body, end, method, temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code):
-                    results = process_resume_split(lead, body, end, method, temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code)
+                def process_and_enable_next(lead, body, end, rank_order, temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code):
+                    results = process_resume_split(lead, body, end, "calibrated", temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code)
                     # results: (html, batch_results_state, continuation_state, fulltext_state,
                     #           model_display, explain_btn, explanation_html, batch_carousel, carousel_slider)
                     
@@ -642,7 +884,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                     fn=process_and_enable_next,
                     inputs=[
                         resume_lead_input, resume_body_input, resume_end_input,
-                        resume_method_dropdown, temperature_slider,
+                        explanation_rank_state, temperature_slider,
                         gr.State(False),
                         batch_token_input, batch_num_variations,
                         gr.State("Gender"), gr.State(None)
@@ -669,7 +911,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                     fn=process_and_enable_next,
                     inputs=[
                         resume_lead_input, resume_body_input, resume_end_input,
-                        resume_method_dropdown, temperature_slider,
+                        explanation_rank_state, temperature_slider,
                         gr.State(True),
                         batch_token_input, batch_num_variations,
                         gr.State("Gender"), batch_code_preview
@@ -689,13 +931,23 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                         return "<p>No variation data available.</p>"
                     res = results[int(index)]
                     sentiment_color = '#27ae60' if res['sentiment'] == 'positive' else '#e74c3c' if res['sentiment'] == 'negative' else '#7f8c8d'
+                    
+                    # Build runs list for carousel
+                    runs_list_html = "<ul style='margin: 10px 0; padding-left: 20px; color: #000;'>"
+                    for i, (run, score) in enumerate(zip(res['runs'], res['scores'])):
+                        r_sent = 'POSITIVE' if score > 0 else 'NEGATIVE' if score < 0 else 'NEUTRAL'
+                        r_col = '#27ae60' if score > 0 else '#e74c3c' if score < 0 else '#7f8c8d'
+                        runs_list_html += f"<li>Run {i+1}: \"{run['continuation']}\" — <span style='color: {r_col}; font-weight: bold;'>{r_sent}</span></li>"
+                    runs_list_html += "</ul>"
+
                     html = f"""
                     <div style="padding: 15px; border: 1px solid #ddd; border-radius: 5px; background: #fff; color: #000;">
                         <p style="color: #000;"><strong>Variation:</strong> {res['variation']}</p>
                         <p style="color: #000;"><strong>Category:</strong> {res['category']}</p>
-                        <p style="color: #000;"><strong>Sentiment:</strong> <span style="color: {sentiment_color}; font-weight: bold;">{res['sentiment'].upper()}</span></p>
+                        <p style="color: #000;"><strong>Sentiment:</strong> <span style="color: {sentiment_color}; font-weight: bold;">{res['sentiment'].upper()}</span> (Avg: {res['avg_score']:.2f})</p>
                         <hr>
-                        <p style="color: #000;"><strong>Continuation:</strong> "{res['continuation']}"</p>
+                        <p style="color: #000;"><strong>All {len(res['runs'])} Runs:</strong></p>
+                        {runs_list_html}
                     </div>
                     """
                     return html
@@ -708,14 +960,14 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
     
                 carousel_explain_btn.click(
                     fn=explain_batch_variation,
-                    inputs=[batch_results_state, carousel_index_slider, resume_method_dropdown],
+                    inputs=[batch_results_state, carousel_index_slider, resume_method_dropdown, explanation_rank_state],
                     outputs=carousel_explanation_html
                 )
     
                 # Explain button
                 resume_explain_btn.click(
                     fn=explain_resume_split,
-                    inputs=[resume_lead_input, resume_body_input, resume_end_input, continuation_state, fulltext_state, resume_method_dropdown],
+                    inputs=[resume_lead_input, resume_body_input, resume_end_input, continuation_state, fulltext_state, resume_method_dropdown, explanation_rank_state],
                     outputs=[explanation_html]
                 )
     
@@ -734,19 +986,35 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                         resume_lead_input, resume_body_input, resume_end_input,
                         pure_html_output, explanation_html, batch_analysis_toggle
                     ],
-                    outputs=[resume_save_status, resume_version_dropdown]
+                    outputs=[resume_save_status, resume_version_dropdown_a]
+                ).then(
+                    fn=lambda x: x,
+                    inputs=[resume_version_dropdown_a],
+                    outputs=[resume_version_dropdown_b]
                 )
     
-                resume_version_dropdown.change(
+                resume_version_dropdown_a.change(
                     fn=on_resume_version_change,
-                    inputs=[resume_version_dropdown, batch_analysis_toggle, batch_results_state],
-                    outputs=[resume_comparison_output, resume_download_selected_btn, resume_download_csv_btn]
+                    inputs=[resume_version_dropdown_a, batch_analysis_toggle, batch_results_state],
+                    outputs=[resume_comparison_output_a, resume_download_selected_btn_a, resume_download_csv_btn]
+                )
+
+                resume_version_dropdown_b.change(
+                    fn=on_resume_version_change,
+                    inputs=[resume_version_dropdown_b, batch_analysis_toggle, batch_results_state],
+                    outputs=[resume_comparison_output_b, resume_download_selected_btn_b, resume_download_csv_btn]
                 )
     
-                resume_clear_btn.click(
+                resume_clear_btn_a.click(
                     fn=clear_resume_comparison,
                     inputs=None,
-                    outputs=[resume_comparison_output, resume_version_dropdown]
+                    outputs=[resume_comparison_output_a, resume_version_dropdown_a]
+                )
+
+                resume_clear_btn_b.click(
+                    fn=clear_resume_comparison,
+                    inputs=None,
+                    outputs=[resume_comparison_output_b, resume_version_dropdown_b]
                 )
     
                 resume_model_dropdown.change(
@@ -838,6 +1106,8 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                                         )
                                         image_model_status = gr.Markdown("")
                                         
+                                    image_current_model_display = gr.Markdown("**Model:** microsoft/git-large-coco")
+                                        
                                     gr.Markdown("#### Analysis Settings")
                                     with gr.Accordion("Attribution Settings", open=True):
                                         img_opacity_slider = gr.Slider(
@@ -928,48 +1198,51 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                                     )
     
                             with gr.Row():
-                                img_batch_group_selector = gr.Radio(["Group 1", "Group 2"], value="Group 1", label="Select Group to Occlude")
+                                img_batch_group_selector = gr.Radio(["Group 1", "Group 2"], value="Group 1", label="Select Group to Analyse", visible=False)
                                 img_batch_idx_slider = gr.Slider(
                                     minimum=0, maximum=10, value=0, step=1,
-                                    label="Selected Image Index"
+                                    label="Selected Image Index", visible=False
                                 )
-                                img_load_occlude_btn = gr.Button(
-                                    "Load Selected for Occlusion",
-                                    variant="secondary"
-                                )
-    
-                            gr.Markdown("#### Occlusion Editor (loaded image)")
-                            gr.Markdown(
-                                "*Paint or erase regions, then click 'Compute Attribution' "
-                                "to see how the caption changes.*"
-                            )
-                            img_occlude_editor = gr.ImageEditor(
-                                label="Edit / Occlude Loaded Image",
-                                type="pil",
-                                brush=gr.Brush(colors=["#000000", "#FF0000", "#FFFFFF"]),
-                                eraser=gr.Eraser(),
-                            )
-                            img_batch_token_slider = gr.Slider(
-                                minimum=0, maximum=20, value=0, step=1,
-                                label="Select Token Index to Attribute",
-                                interactive=True
-                            )
-                            img_batch_compute_btn = gr.Button(
-                                "🔬 Re-Caption & Compute Attribution",
-                                variant="primary"
-                            )
-                            img_batch_caption_out = gr.Textbox(
-                                label="Caption (updated from occluded image)", lines=2, interactive=False
-                            )
-                            img_batch_tokens_out = gr.Textbox(
-                                label="Tokens", lines=5, interactive=False
-                            )
+
                             with gr.Row():
-                                img_batch_attr_out = gr.Image(
-                                    label="Attribution Heatmap", type="pil"
+                                with gr.Column(scale=1):
+                                    img_batch_caption_out = gr.Textbox(
+                                        label="Caption", lines=2, interactive=False
+                                    )
+                                    img_batch_tokens_out = gr.Textbox(
+                                        label="Tokens", lines=5, interactive=False
+                                    )
+                                    img_batch_token_slider = gr.Slider(
+                                        minimum=0, maximum=20, value=0, step=1,
+                                        label="Select Token Index to Attribute",
+                                        interactive=True
+                                    )
+                                    img_batch_compute_btn = gr.Button(
+                                        "🔬 Compute Attribution for Selected Token",
+                                        variant="primary"
+                                    )
+                                with gr.Column(scale=1):
+                                    img_batch_attr_out = gr.Image(
+                                        label="Attribution Heatmap", type="pil"
+                                    )
+                                    img_batch_orig_out = gr.Image(
+                                        label="Selected / Edited Image", type="pil"
+                                    )
+
+                            with gr.Accordion("Advanced: Occlusion Probe", open=False):
+                                gr.Markdown(
+                                    "*Paint or erase regions, then click 'Compute Attribution' "
+                                    "to re-caption and see how the analysis changes.*"
                                 )
-                                img_batch_orig_out = gr.Image(
-                                    label="Loaded / Edited Image", type="pil"
+                                img_occlude_editor = gr.ImageEditor(
+                                    label="Edit / Occlude Loaded Image",
+                                    type="pil",
+                                    brush=gr.Brush(colors=["#000000", "#FF0000", "#FFFFFF"]),
+                                    eraser=gr.Eraser(),
+                                )
+                                img_batch_recompute_btn = gr.Button(
+                                    "🔬 Re-Caption & Compute Attribution",
+                                    variant="primary"
                                 )
     
                         # --- Save button (shared) ---
@@ -1139,67 +1412,69 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                     show_progress="full"
                 )
     
-                # Gallery click → update index slider and group
-                def handle_gallery_select_g1(evt: gr.SelectData):
-                    return evt.index, "Group 1"
-                def handle_gallery_select_g2(evt: gr.SelectData):
-                    return evt.index, "Group 2"
-    
-                img_batch_gallery_g1.select(
-                    fn=handle_gallery_select_g1,
-                    inputs=None,
-                    outputs=[img_batch_idx_slider, img_batch_group_selector]
-                )
-                img_batch_gallery_g2.select(
-                    fn=handle_gallery_select_g2,
-                    inputs=None,
-                    outputs=[img_batch_idx_slider, img_batch_group_selector]
-                )
-    
-                # Load batch image into occlusion editor
-                def load_for_occlusion(results_g1, results_g2, group, idx):
+                # Gallery click → load image data and reset analysis
+                def on_gallery_select(results_g1, results_g2, group, evt: gr.SelectData):
                     results = results_g1 if group == "Group 1" else results_g2
-                    if not results or int(idx) >= len(results):
-                        return None, "", "", "", []
-                    item = results[int(idx)]
+                    idx = evt.index
+                    if not results or idx >= len(results):
+                        return idx, group, None, "", "", None, []
+                    
+                    item = results[idx]
                     toks_str = "\n".join([f"{i}: {t}" for i, t in enumerate(item["tokens"])])
+                    
                     return (
-                        item["image"],   # into editor
-                        item["caption"], # caption textbox
-                        toks_str,        # tokens textbox
-                        item["caption"], # caption state
-                        item["tokens"],  # tokens state
+                        idx,
+                        group,
+                        item["image"],   # selected/orig out
+                        item["caption"], # caption out
+                        toks_str,        # tokens out
+                        item["image"],   # occlude editor
+                        None,            # clear heatmap
+                        item["caption"], # state
+                        item["tokens"],  # state
                     )
     
-                img_load_occlude_btn.click(
-                    fn=load_for_occlusion,
-                    inputs=[img_batch_results_g1, img_batch_results_g2, img_batch_group_selector, img_batch_idx_slider],
+                img_batch_gallery_g1.select(
+                    fn=on_gallery_select,
+                    # We need to know which group was clicked, but SelectData doesn't tell us.
+                    # We'll use a wrapper or separate functions that call the unified one.
+                    inputs=[img_batch_results_g1, img_batch_results_g2, gr.State("Group 1")],
                     outputs=[
-                        img_occlude_editor,
-                        img_batch_caption_out, img_batch_tokens_out,
-                        img_caption_state, img_tokens_state,
-                    ]
-                )
-    
-                # Single: Compute Attribution
-                img_compute_btn.click(
-                    fn=blip_analyze_image,
-                    inputs=[
-                        img_editor, img_opacity_slider, img_steps_slider,
-                        img_token_slider, img_caption_state, img_tokens_state
-                    ],
-                    outputs=[
-                        img_caption_out, img_tokens_out, img_attr_out, img_original_out,
+                        img_batch_idx_slider, img_batch_group_selector,
+                        img_batch_orig_out, img_batch_caption_out, img_batch_tokens_out,
+                        img_occlude_editor, img_batch_attr_out,
                         img_caption_state, img_tokens_state
                     ]
-                ).then(
-                    fn=lambda attr, orig: (attr, orig),
-                    inputs=[img_attr_out, img_original_out],
-                    outputs=[img_attr_state, img_original_state]
+                )
+                img_batch_gallery_g2.select(
+                    fn=on_gallery_select,
+                    inputs=[img_batch_results_g1, img_batch_results_g2, gr.State("Group 2")],
+                    outputs=[
+                        img_batch_idx_slider, img_batch_group_selector,
+                        img_batch_orig_out, img_batch_caption_out, img_batch_tokens_out,
+                        img_occlude_editor, img_batch_attr_out,
+                        img_caption_state, img_tokens_state
+                    ]
                 )
     
-                # Batch: Re-caption from occluded image, then compute attribution
+                # (Remaining click handlers are fine as is)
+    
+                # Batch: Compute Attribution for selected image (from results)
                 img_batch_compute_btn.click(
+                    fn=blip_analyze_image,
+                    inputs=[
+                        img_batch_orig_out, img_opacity_slider, img_steps_slider,
+                        img_batch_token_slider, img_caption_state, img_tokens_state
+                    ],
+                    outputs=[
+                        img_batch_caption_out, img_batch_tokens_out,
+                        img_batch_attr_out, img_batch_orig_out,
+                        img_caption_state, img_tokens_state
+                    ]
+                )
+
+                # Batch: Re-caption from occluded image, then compute attribution
+                img_batch_recompute_btn.click(
                     fn=blip_occlude_then_analyze,
                     inputs=[
                         img_occlude_editor, img_opacity_slider, img_steps_slider,
@@ -1226,23 +1501,39 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                     inputs=None, outputs=image_steps
                 )
     
+                image_model_dropdown.change(
+                    fn=switch_image_model,
+                    inputs=image_model_dropdown,
+                    outputs=[image_model_status, image_current_model_display]
+                )
+    
                 # Autosave → Step 3
                 def img_autosave_and_advance(
-                    caption, attr_state, orig_state, batch_mode, batch_results_g1, batch_results_g2, group, selected_idx
+                    caption, attr_state, orig_state, batch_mode, batch_graph, 
+                    batch_results_g1, batch_results_g2, group, selected_idx
                 ):
                     from image_utility import save_image_version
                     if batch_mode:
                         results = batch_results_g1 if group == "Group 1" else batch_results_g2
-                        idx = int(selected_idx)
-                        item = results[idx] if idx < len(results) else {}
+                        # selected_idx might be None if nothing clicked yet
+                        idx = int(selected_idx) if selected_idx is not None else 0
+                        item = results[idx] if results and idx < len(results) else {}
                         cap = item.get("caption", caption)
                         orig = item.get("image", orig_state)
                     else:
                         cap = caption
                         orig = orig_state
+                        
                     from datetime import datetime as _dt
                     label = f"Auto: {_dt.now().strftime('%Y-%m-%d %H:%M')} | {'Batch' if batch_mode else 'Single'}"
-                    _, dropdown_update = save_image_version(cap, attr_state, orig, auto_label=label)
+                    _, dropdown_update = save_image_version(
+                        cap, attr_state, orig, 
+                        batch_mode=batch_mode, 
+                        batch_graph=batch_graph,
+                        results_g1=batch_results_g1,
+                        results_g2=batch_results_g2,
+                        auto_label=label
+                    )
                     return (
                         gr.update(selected=2),
                         dropdown_update,
@@ -1253,18 +1544,33 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                     fn=img_autosave_and_advance,
                     inputs=[
                         img_caption_state, img_attr_state, img_original_state,
-                        img_batch_mode, img_batch_results_g1, img_batch_results_g2, img_batch_group_selector, img_batch_idx_slider
+                        img_batch_mode, img_batch_word_freq_chart,
+                        img_batch_results_g1, img_batch_results_g2, 
+                        img_batch_group_selector, img_batch_idx_slider
                     ],
                     outputs=[image_steps, img_version_dropdown, img_autosave_status]
                 )
     
                 # Manual save
-                def img_manual_save(caption, attr_state, orig_state):
-                    return save_image_version(caption, attr_state, orig_state)
+                def img_manual_save(
+                    caption, attr_state, orig_state, 
+                    batch_mode, batch_graph, batch_results_g1, batch_results_g2
+                ):
+                    return save_image_version(
+                        caption, attr_state, orig_state,
+                        batch_mode=batch_mode,
+                        batch_graph=batch_graph,
+                        results_g1=batch_results_g1,
+                        results_g2=batch_results_g2
+                    )
     
                 img_save_btn.click(
                     fn=img_manual_save,
-                    inputs=[img_caption_state, img_attr_state, img_original_state],
+                    inputs=[
+                        img_caption_state, img_attr_state, img_original_state,
+                        img_batch_mode, img_batch_word_freq_chart, 
+                        img_batch_results_g1, img_batch_results_g2
+                    ],
                     outputs=[img_save_status, img_version_dropdown]
                 )
     
@@ -1406,7 +1712,8 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
             # Resume Exports
             resume_download_all_btn.click(fn=res_export_all, inputs=None, outputs=resume_download_all_btn)
             
-            resume_download_selected_btn.click(fn=res_export_selected, inputs=resume_version_dropdown, outputs=resume_download_selected_btn)
+            resume_download_selected_btn_a.click(fn=res_export_selected, inputs=resume_version_dropdown_a, outputs=resume_download_selected_btn_a)
+            resume_download_selected_btn_b.click(fn=res_export_selected, inputs=resume_version_dropdown_b, outputs=resume_download_selected_btn_b)
             resume_download_csv_btn.click(fn=res_export_csv, inputs=batch_results_state, outputs=resume_download_csv_btn)
             
             # Image Exports

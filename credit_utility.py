@@ -15,6 +15,7 @@ import joblib
 import pickle
 import io
 from datetime import datetime
+import tempfile
 
 # ADDED: Track current model
 _current_model_name = "Alfazril/credit-risk-prediction"
@@ -667,6 +668,9 @@ def compare_scenarios(age, income, credit_score, debt_ratio,
     return fig
 
 
+# Global storage for credit risk versions
+_saved_credit_versions = {}
+
 def reset_credit_data():
     """Reset all input fields to default values"""
     defaults = sample_credit_data()
@@ -682,33 +686,134 @@ def reset_credit_data():
     )
 
 
-def export_credit_report(age, income, credit_score, debt_ratio, 
+def get_credit_report_html(data):
+    """
+    Generate a full HTML report for a credit risk analysis version.
+    """
+    timestamp = data.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    age = data.get('age')
+    income = data.get('income')
+    credit_score = data.get('credit_score')
+    debt_ratio = data.get('debt_ratio')
+    employment_years = data.get('employment_years')
+    loan_amount = data.get('loan_amount')
+    num_accounts = data.get('num_accounts')
+    delinquencies = data.get('delinquencies')
+    risk_output = data.get('risk_output', 'N/A')
+    
+    html = f"""
+    <html>
+    <head>
+        <style>
+            body {{ font-family: sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }}
+            .header {{ background-color: #2c3e50; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
+            .section {{ background-color: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 5px solid #3498db; }}
+            .risk-low {{ color: #27ae60; font-weight: bold; font-size: 1.2em; }}
+            .risk-med {{ color: #f39c12; font-weight: bold; font-size: 1.2em; }}
+            .risk-high {{ color: #c0392b; font-weight: bold; font-size: 1.2em; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+            th, td {{ text-align: left; padding: 12px; border-bottom: 1px solid #ddd; }}
+            th {{ background-color: #f2f2f2; }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>Credit Risk Analysis Report</h1>
+            <p>Generated: {timestamp}</p>
+        </div>
+        
+        <div class="section">
+            <h2>Risk Assessment</h2>
+            <div>{risk_output}</div>
+        </div>
+        
+        <div class="section">
+            <h2>Applicant Information</h2>
+            <table>
+                <tr><th>Metric</th><th>Value</th></tr>
+                <tr><td>Age</td><td>{age} years</td></tr>
+                <tr><td>Annual Income</td><td>${income:,}</td></tr>
+                <tr><td>Credit Score</td><td>{credit_score}</td></tr>
+                <tr><td>Debt-to-Income Ratio</td><td>{debt_ratio}%</td></tr>
+                <tr><td>Years at Current Job</td><td>{employment_years}</td></tr>
+                <tr><td>Loan Amount Requested</td><td>${loan_amount:,}</td></tr>
+                <tr><td>Number of Credit Accounts</td><td>{num_accounts}</td></tr>
+                <tr><td>Past Delinquencies</td><td>{delinquencies}</td></tr>
+            </table>
+        </div>
+        
+        <div class="section">
+            <h2>Note on Methodology</h2>
+            <p>This report uses local model explanations (SHAP/LIME/Integrated Gradients) to identify the key factors contributing to the predicted credit risk. The results should be used for auditing purposes to ensure algorithmic fairness and compliance.</p>
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
+
+def save_credit_version(age, income, credit_score, debt_ratio, 
                         employment_years, loan_amount, num_accounts, 
-                        delinquencies, risk_output, feature_plot):
+                        delinquencies, risk_output, version_name=None):
     """
-    Export analysis report (simplified - returns status message)
+    Save the current credit analysis version to global storage.
     """
-    _initialize_model()
+    global _saved_credit_versions
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not version_name:
+        version_name = f"Credit: {timestamp}"
+        
+    data = {
+        'timestamp': timestamp,
+        'age': age,
+        'income': income,
+        'credit_score': credit_score,
+        'debt_ratio': debt_ratio,
+        'employment_years': employment_years,
+        'loan_amount': loan_amount,
+        'num_accounts': num_accounts,
+        'delinquencies': delinquencies,
+        'risk_output': risk_output
+    }
     
-    # Create report content
-    report = f"""
-    CREDIT RISK ANALYSIS REPORT
-    Generated: {timestamp}
+    # Generate HTML content for this version
+    data['html'] = get_credit_report_html(data)
     
-    APPLICANT INFORMATION:
-    - Age: {age} years
-    - Annual Income: ${income:,}
-    - Credit Score: {credit_score}
-    - Debt-to-Income Ratio: {debt_ratio}%
-    - Years at Current Job: {employment_years}
-    - Loan Amount Requested: ${loan_amount:,}
-    - Number of Credit Accounts: {num_accounts}
-    - Past Delinquencies: {delinquencies}
+    _saved_credit_versions[version_name] = data
     
-    ANALYSIS COMPLETED
-    Report would be saved as: credit_report_{timestamp.replace(':', '-')}.pdf
-    """
+    # Return updated list of version names for dropdown
+    return list(_saved_credit_versions.keys()), f"✅ Saved: {version_name}"
+
+
+def export_selected_credit_html(selected):
+    """Export a single selected version as an HTML file."""
+    global _saved_credit_versions
+    if not selected or selected not in _saved_credit_versions:
+        return None
     
-    return f"✅ **Report Generated Successfully**\n\nTimestamp: {timestamp}\n\nNote: In production, this would save a PDF report with detailed analysis and visualizations."
+    html = _saved_credit_versions[selected]['html']
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
+        f.write(html)
+        path = f.name
+    return path
+
+
+def export_all_credit_html():
+    """Export all saved versions consolidated into one HTML file."""
+    global _saved_credit_versions
+    if not _saved_credit_versions:
+        return None
+    
+    html = "<html><body><h1>All Saved Credit Risk Audits</h1><hr>"
+    for version_name, data in _saved_credit_versions.items():
+        html += f"<h2>{version_name}</h2>"
+        html += data['html']
+        html += "<hr>"
+    html += "</body></html>"
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
+        f.write(html)
+        path = f.name
+    return path
+

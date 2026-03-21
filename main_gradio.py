@@ -58,9 +58,11 @@ from credit_utility import (
     get_feature_importance,
     compare_scenarios,
     reset_credit_data,
-    export_credit_report,
+    validate_and_load_credit_model,
+    save_credit_version,
+    export_selected_credit_html,
+    export_all_credit_html,
     switch_credit_model,
-    validate_and_load_credit_model,   # NEW — HF URL loader
 )
 
 global has_explanation
@@ -310,8 +312,8 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
             nav_home_btn = gr.Button("Home", variant="secondary")
             gr.Markdown("---")
             nav_resume_btn = gr.Button("Language", variant="primary")
-            nav_image_btn = gr.Button("Vision-Language", variant="secondary", interactive=False)
-            nav_credit_btn = gr.Button("Supervised", variant="secondary", interactive=False)
+            nav_image_btn = gr.Button("Vision-Language", variant="secondary", interactive=True)
+            nav_credit_btn = gr.Button("Supervised", variant="secondary", interactive=True)
 
         def navigate(choice):
             show_intro = (choice == "home")
@@ -1776,82 +1778,172 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                 gr.Markdown("### Credit Risk Model Auditor")
                 gr.Markdown("Analyze credit risk predictions and understand which factors influence the model's decisions.")
                 
-                # Model selection dropdown replacement
-                with gr.Row():
-                    credit_model_input = gr.Textbox(
-                        label="HuggingFace Model ID or URL",
-                        placeholder="e.g. Alfazril/credit-risk-prediction",
-                        scale=5,
-                        interactive=True,
-                    )
-                    credit_load_btn = gr.Button("Load Model", variant="primary", scale=1)
-                credit_model_status = gr.Markdown("", elem_id="credit_model_status")
-                gr.Markdown(
-                    "*Requires a scikit-learn compatible tabular/text classification model saved as .pkl or .joblib on HuggingFace.*"
-                )
-    
-                with gr.Row():
-                    # Left column - Input features
-                    with gr.Column(scale=1):
-                        gr.Markdown("### Applicant Information")
-                        credit_age = gr.Slider(minimum=18, maximum=80, value=35, step=1, label="Age")
-                        credit_income = gr.Slider(minimum=10000, maximum=500000, value=50000, step=5000, label="Annual Income ($)")
-                        credit_score = gr.Slider(minimum=300, maximum=850, value=650, step=10, label="Credit Score")
-                        credit_debt_ratio = gr.Slider(minimum=0, maximum=100, value=30, step=1, label="Debt-to-Income Ratio (%)")
-                        credit_employment_years = gr.Slider(minimum=0, maximum=40, value=5, step=1, label="Years at Current Job")
-                        credit_loan_amount = gr.Slider(minimum=1000, maximum=100000, value=15000, step=1000, label="Loan Amount Requested ($)")
-                        credit_num_accounts = gr.Slider(minimum=0, maximum=20, value=3, step=1, label="Number of Credit Accounts")
-                        credit_delinquencies = gr.Slider(minimum=0, maximum=10, value=0, step=1, label="Past Delinquencies")
+                with gr.Tabs(selected=0) as credit_steps:
+                    # ── Step 1: Input & Configuration ────────────────────────────
+                    with gr.Tab("Step 1: Input & Configuration", id=0):
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                with gr.Accordion("1. Configure Model", open=True):
+                                    credit_model_input = gr.Textbox(
+                                        label="HuggingFace Model ID or URL",
+                                        placeholder="e.g. Alfazril/credit-risk-prediction",
+                                    )
+                                    credit_load_btn = gr.Button("Load Model", variant="primary")
+                                    credit_model_status = gr.Markdown("")
+                                    gr.Markdown("*Requires a scikit-learn compatible tabular model (.pkl or .joblib).*")
+                                
+                                with gr.Accordion("2. Applicant Information", open=True):
+                                    credit_age = gr.Slider(minimum=18, maximum=80, value=35, step=1, label="Age")
+                                    credit_income = gr.Slider(minimum=10000, maximum=500000, value=50000, step=5000, label="Annual Income ($)")
+                                    credit_score = gr.Slider(minimum=300, maximum=850, value=650, step=10, label="Credit Score")
+                                    credit_debt_ratio = gr.Slider(minimum=0, maximum=100, value=30, step=1, label="Debt-to-Income Ratio (%)")
+                                    credit_employment_years = gr.Slider(minimum=0, maximum=40, value=5, step=1, label="Years at Current Job")
+                                    credit_loan_amount = gr.Slider(minimum=1000, maximum=100000, value=15000, step=1000, label="Loan Amount Requested ($)")
+                                    credit_num_accounts = gr.Slider(minimum=0, maximum=20, value=3, step=1, label="Number of Credit Accounts")
+                                    credit_delinquencies = gr.Slider(minimum=0, maximum=10, value=0, step=1, label="Past Delinquencies")
+                                    
+                                    with gr.Row():
+                                        credit_predict_btn = gr.Button("Predict Risk", variant="primary")
+                                        credit_reset_btn = gr.Button("Reset to Default", variant="secondary")
+                                    
+                                    credit_method_dropdown = gr.Dropdown(
+                                        choices=["shap", "lime", "integrated_gradients"],
+                                        value="shap",
+                                        label="Explanation Method",
+                                        interactive=True
+                                    )
+
+                    # ── Step 2: Risk Assessment ──────────────────────────────────
+                    with gr.Tab("Step 2: Risk Assessment", id=1, interactive=False) as credit_step2_tab:
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                gr.Markdown("### Risk Assessment")
+                                credit_current_model_display = gr.Markdown("**Model:** Loading...")
+                                credit_risk_output = gr.HTML(
+                                    label="Risk Prediction",
+                                    value="<p>Predict risk in Step 1 to see results...</p>"
+                                )
+                                credit_feature_plot = gr.Plot(label="Feature Importance")
+                            
+                            with gr.Column(scale=1):
+                                gr.Markdown("### Scenario Analysis")
+                                credit_scenario_feature = gr.Dropdown(
+                                    choices=["Age", "Income", "Credit Score", "Debt Ratio", "Employment Years"],
+                                    value="Credit Score",
+                                    label="Feature to Vary",
+                                    interactive=True
+                                )
+                                credit_compare_btn = gr.Button("Compare Scenarios", variant="primary")
+                                credit_scenario_plot = gr.Plot(label="Scenario Comparison")
                         
                         with gr.Row():
-                            credit_predict_btn = gr.Button("Predict Risk", variant="primary")
-                            credit_reset_btn = gr.Button("Reset to Default", variant="secondary")
+                            credit_step2_back_btn = gr.Button("← Back to Input", variant="secondary")
+                            credit_step2_next_btn = gr.Button("Next: Download & Compare →", variant="primary")
+                        credit_autosave_status = gr.Markdown("", visible=False)
+
+                    # ── Step 3: Download, Share, and Compare ──────────────────────
+                    with gr.Tab("Step 3: Download, Share, and Compare", id=2, interactive=False) as credit_step3_tab:
+                        gr.Markdown("Save versions to track your audit progress and compare different model behaviors side-by-side.")
                         
-                        credit_method_dropdown = gr.Dropdown(
-                            choices=["shap", "lime", "integrated_gradients"],
-                            value="shap",
-                            label="Explanation Method",
-                            interactive=True
-                        )
-    
-                    # Middle column - Prediction results
-                    with gr.Column(scale=1):
-                        gr.Markdown("### Risk Assessment")
-                        # ADDED: Show current model
-                        credit_current_model_display = gr.Markdown("**Model:** Loading...")
-                        credit_risk_output = gr.HTML(
-                            label="Risk Prediction",
-                            value="<p>Enter applicant information and click 'Predict Risk'...</p>"
-                        )
-                        credit_feature_plot = gr.Plot(label="Feature Importance")
+                        with gr.Row():
+                            with gr.Column():
+                                gr.Markdown("#### Comparison Column A")
+                                credit_version_dropdown_a = gr.Dropdown(choices=[], label="Select version A", interactive=True)
+                                with gr.Row():
+                                    credit_clear_btn_a = gr.Button("Clear A", variant="secondary", size="sm")
+                                    credit_download_selected_btn_a = gr.DownloadButton("Download A (HTML)", variant="primary", visible=False, size="sm")
+                                credit_comparison_output_a = gr.HTML(value="<p>Select a version to compare.</p>")
+
+                            with gr.Column():
+                                gr.Markdown("#### Comparison Column B")
+                                credit_version_dropdown_b = gr.Dropdown(choices=[], label="Select version B", interactive=True)
+                                with gr.Row():
+                                    credit_clear_btn_b = gr.Button("Clear B", variant="secondary", size="sm")
+                                    credit_download_selected_btn_b = gr.DownloadButton("Download B (HTML)", variant="primary", visible=False, size="sm")
+                                credit_comparison_output_b = gr.HTML(value="<p>Select a version to compare.</p>")
                         
-                    # Right column - Scenario comparison
-                    with gr.Column(scale=1):
-                        gr.Markdown("### Scenario Analysis")
-                        gr.Markdown("Compare how changes to specific features affect the prediction")
-                        credit_scenario_feature = gr.Dropdown(
-                            choices=["Age", "Income", "Credit Score", "Debt Ratio", "Employment Years"],
-                            value="Credit Score",
-                            label="Feature to Vary",
-                            interactive=True
-                        )
-                        credit_compare_btn = gr.Button("Compare Scenarios", variant="primary")
-                        credit_scenario_plot = gr.Plot(label="Scenario Comparison")
-                        credit_export_btn = gr.Button("Export Analysis Report", variant="secondary")
-                        credit_export_status = gr.Markdown("")
+                        with gr.Row():
+                            credit_download_all_btn = gr.DownloadButton("Download All Saved (HTML)", variant="secondary")
+                            credit_step3_back_btn = gr.Button("← Back to Assessment", variant="secondary")
+
+                gr.Markdown("""
+                ### How to Use:
+                - Adjust sliders in **Step 1** and click "Predict Risk".
+                - View detailed metrics and scenario analysis in **Step 2**.
+                - Save and compare your findings in **Step 3**.
+                """)
                 # event handlers:
     
-                # MODIFIED: Added credit_current_model_display to outputs
+                # Event Handlers for Credit Risk Tab
+                def handle_predict_and_save(age, income, credit_score, debt_ratio, employment_years, 
+                                          loan_amount, num_accounts, delinquencies, method):
+                    # 1. Predict
+                    html, fig, model_disp = predict_credit_risk(
+                        age, income, credit_score, debt_ratio, employment_years, 
+                        loan_amount, num_accounts, delinquencies, method
+                    )
+                    
+                    # 2. Autosave
+                    choices, msg = save_credit_version(
+                        age, income, credit_score, debt_ratio, employment_years, 
+                        loan_amount, num_accounts, delinquencies, html
+                    )
+                    
+                    # 3. Update UI
+                    return (
+                        html, fig, model_disp,
+                        gr.update(visible=True, interactive=True), # Step 2 tab
+                        gr.update(selected=1),                     # Switch to Step 2
+                        gr.update(choices=choices),                # Update Dropdown A
+                        gr.update(choices=choices),                # Update Dropdown B
+                    )
+
                 credit_predict_btn.click(
-                    fn=predict_credit_risk,
+                    fn=handle_predict_and_save,
                     inputs=[
                         credit_age, credit_income, credit_score, credit_debt_ratio,
                         credit_employment_years, credit_loan_amount, credit_num_accounts,
                         credit_delinquencies, credit_method_dropdown
                     ],
-                    outputs=[credit_risk_output, credit_feature_plot, credit_current_model_display]  # ADDED 3rd output
+                    outputs=[
+                        credit_risk_output, credit_feature_plot, credit_current_model_display,
+                        credit_step2_tab, credit_steps, credit_version_dropdown_a, credit_version_dropdown_b
+                    ]
                 )
-    
+
+                credit_step2_next_btn.click(
+                    fn=lambda: (gr.update(selected=2), gr.update(interactive=True)),
+                    outputs=[credit_steps, credit_step3_tab]
+                )
+
+                credit_step2_back_btn.click(fn=lambda: gr.update(selected=0), outputs=credit_steps)
+                credit_step3_back_btn.click(fn=lambda: gr.update(selected=1), outputs=credit_steps)
+
+                def on_credit_version_change(selected):
+                    from credit_utility import _saved_credit_versions
+                    if not selected or selected not in _saved_credit_versions:
+                        return "<p>Select a version.</p>", gr.update(visible=False)
+                    data = _saved_credit_versions[selected]
+                    return data['html'], gr.update(visible=True)
+
+                credit_version_dropdown_a.change(
+                    fn=on_credit_version_change,
+                    inputs=credit_version_dropdown_a,
+                    outputs=[credit_comparison_output_a, credit_download_selected_btn_a]
+                )
+                credit_version_dropdown_b.change(
+                    fn=on_credit_version_change,
+                    inputs=credit_version_dropdown_b,
+                    outputs=[credit_comparison_output_b, credit_download_selected_btn_b]
+                )
+
+                credit_download_selected_btn_a.click(fn=export_selected_credit_html, inputs=credit_version_dropdown_a, outputs=credit_download_selected_btn_a)
+                credit_download_selected_btn_b.click(fn=export_selected_credit_html, inputs=credit_version_dropdown_b, outputs=credit_download_selected_btn_b)
+                credit_download_all_btn.click(fn=export_all_credit_html, outputs=credit_download_all_btn)
+
+                credit_clear_btn_a.click(fn=lambda: ("<p>Select a version.</p>", gr.update(visible=False)), outputs=[credit_comparison_output_a, credit_download_selected_btn_a])
+                credit_clear_btn_b.click(fn=lambda: ("<p>Select a version.</p>", gr.update(visible=False)), outputs=[credit_comparison_output_b, credit_download_selected_btn_b])
+
                 credit_reset_btn.click(
                     fn=reset_credit_data,
                     inputs=None,
@@ -1861,7 +1953,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                         credit_delinquencies
                     ]
                 )
-    
+
                 credit_compare_btn.click(
                     fn=compare_scenarios,
                     inputs=[
@@ -1870,16 +1962,6 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                         credit_delinquencies, credit_scenario_feature
                     ],
                     outputs=credit_scenario_plot
-                )
-    
-                credit_export_btn.click(
-                    fn=export_credit_report,
-                    inputs=[
-                        credit_age, credit_income, credit_score, credit_debt_ratio,
-                        credit_employment_years, credit_loan_amount, credit_num_accounts,
-                        credit_delinquencies, credit_risk_output, credit_feature_plot
-                    ],
-                    outputs=credit_export_status
                 )
     
                 gr.Markdown("""

@@ -141,6 +141,73 @@ def _initialize_model():
     _explainer = shap.TreeExplainer(_model)
     print("SHAP explainer initialized")
 
+
+def validate_and_load_credit_model(hf_model_id: str):
+    """Validate and load a HuggingFace supervised model by URL or ID."""
+    global _model, _scaler, _explainer, _current_model_name
+
+    if not hf_model_id or not hf_model_id.strip():
+        return "⚠️ Please enter a HuggingFace model ID.", f"**Model:** {_current_model_name}"
+
+    model_id = hf_model_id.strip()
+    if model_id.startswith("https://huggingface.co/"):
+        model_id = model_id[len("https://huggingface.co/"):]
+    model_id = model_id.rstrip("/")
+
+    # Check if it's one of our built-in synthetic model names
+    if model_id in CREDIT_MODELS and CREDIT_MODELS[model_id]["repo_id"] is None:
+        _current_model_name = model_id
+        _model = None  # force reload
+        _initialize_model()
+        return f"✅ **Loaded synthetic model:** `{model_id}`", f"**Model:** {model_id}"
+
+    try:
+        from huggingface_hub import model_info as hf_model_info
+        from huggingface_hub import hf_hub_download
+        from huggingface_hub.utils import RepositoryNotFoundError, GatedRepoError
+
+        try:
+            info = hf_model_info(model_id)
+        except RepositoryNotFoundError:
+            return f"❌ **Repository not found:** `{model_id}`", f"**Model:** {_current_model_name}"
+        except GatedRepoError:
+            return f"❌ **Gated repository:** `{model_id}`", f"**Model:** {_current_model_name}"
+
+        # Try to find a model file ending in .joblib or .pkl
+        filenames = [s.rfilename for s in info.siblings if s.rfilename.endswith((".joblib", ".pkl", ".pickle"))]
+        if not filenames:
+            return f"❌ **No .joblib or .pkl file found in `{model_id}`.**", f"**Model:** {_current_model_name}"
+            
+        filename = filenames[0]
+        
+        print(f"Downloading {filename} from {model_id}...")
+        model_path = hf_hub_download(repo_id=model_id, filename=filename)
+        
+        import joblib
+        import pickle
+        import shap
+        
+        try:
+            new_model = joblib.load(model_path)
+        except:
+            with open(model_path, "rb") as f:
+                new_model = pickle.load(f)
+
+        _model = new_model
+        _current_model_name = model_id
+        
+        # We assume it's a tree model for default SHAP
+        try:
+            _explainer = shap.TreeExplainer(_model)
+        except Exception as e:
+            print("Could not initialize TreeExplainer, model might not be tree based.")
+            _explainer = None
+            
+        return f"✅ **Loaded:** `{model_id}/{filename}`", f"**Model:** {model_id}"
+
+    except Exception as e:
+        return f"❌ **Error validating `{model_id}`:** {str(e)}", f"**Model:** {_current_model_name}"
+
 # ADDED: Model management functions
 def get_credit_model_choices():
     """Return list of available credit risk models"""
@@ -172,6 +239,107 @@ def switch_credit_model(model_name):
     model_display = f"**Model:** {model_name}"
     
     return status_msg, model_display
+
+
+# Accepted pipeline / model types for supervised credit auditing
+_CREDIT_PIPELINE_TAGS = {
+    "tabular-classification", "text-classification", "tabular-regression",
+    "structured-data-classification",
+}
+_CREDIT_MODEL_TYPES = {"xgboost", "lightgbm", "sklearn", "random_forest", "gradient_boosting"}
+
+
+def validate_and_load_credit_model(hf_model_id: str):
+    """
+    Validate and load a HuggingFace supervised / tabular model by URL or ID.
+
+    Returns:
+        (status_markdown, model_display_markdown)
+    """
+    global _model, _scaler, _explainer, _current_model_name
+
+    if not hf_model_id or not hf_model_id.strip():
+        return "⚠️ Please enter a HuggingFace model ID.", f"**Model:** {_current_model_name}"
+
+    model_id = hf_model_id.strip()
+    if model_id.startswith("https://huggingface.co/"):
+        model_id = model_id[len("https://huggingface.co/"):]
+    model_id = model_id.rstrip("/")
+
+    try:
+        from huggingface_hub import model_info as hf_model_info
+        from huggingface_hub.utils import RepositoryNotFoundError, GatedRepoError
+
+        try:
+            info = hf_model_info(model_id)
+        except RepositoryNotFoundError:
+            return (
+                f"❌ **Repository not found:** `{model_id}`\n\nPlease check the model ID or URL.",
+                f"**Model:** {_current_model_name}",
+            )
+        except GatedRepoError:
+            return (
+                f"❌ **Gated repository:** `{model_id}`\n\nAccept the model license on HuggingFace first.",
+                f"**Model:** {_current_model_name}",
+            )
+
+        pipeline_tag = (info.pipeline_tag or "").lower()
+        model_type = ""
+        if info.config and isinstance(info.config, dict):
+            model_type = info.config.get("model_type", "").lower()
+
+        accepted = pipeline_tag in _CREDIT_PIPELINE_TAGS or model_type in _CREDIT_MODEL_TYPES
+
+        if not accepted and pipeline_tag and pipeline_tag not in ("", "null"):
+            return (
+                f"❌ **Unsupported model type:** `{model_id}`\n\n"
+                f"Detected pipeline: `{pipeline_tag}` / architecture: `{model_type or 'unknown'}`\n\n"
+                "Only tabular-classification / structured-data models are supported for credit auditing.",
+                f"**Model:** {_current_model_name}",
+            )
+
+        # Attempt to download and load via hf_hub_download + joblib/pickle
+        _model = None
+        _scaler = None
+        _explainer = None
+        _current_model_name = model_id
+
+        # Find a .pkl or .joblib file in the repo
+        from huggingface_hub import list_repo_files, hf_hub_download
+        import joblib, pickle
+
+        files = list(list_repo_files(model_id))
+        model_file = next(
+            (f for f in files if f.endswith(".pkl") or f.endswith(".joblib")), None
+        )
+        if model_file is None:
+            return (
+                f"⚠️ **No .pkl/.joblib file found in `{model_id}`.**\n\n"
+                "The supervised model tab requires a pickled scikit-learn compatible model.",
+                f"**Model:** {_current_model_name}",
+            )
+
+        path = hf_hub_download(repo_id=model_id, filename=model_file)
+        try:
+            _model = joblib.load(path)
+        except Exception:
+            with open(path, "rb") as f:
+                _model = pickle.load(f)
+
+        try:
+            _explainer = shap.TreeExplainer(_model)
+        except Exception:
+            _explainer = None  # Non-tree model — SHAP explainer may not work
+
+        status_msg = f"✅ **Loaded:** `{model_id}` (file: `{model_file}`)"
+        model_display = f"**Model:** {model_id}"
+        return status_msg, model_display
+
+    except Exception as e:
+        return (
+            f"❌ **Error loading `{model_id}`:** {str(e)}",
+            f"**Model:** {_current_model_name}",
+        )
 
 def sample_credit_data():
     """Returns default sample credit applicant data"""

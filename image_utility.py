@@ -125,6 +125,84 @@ def switch_image_model(model_name):
     except Exception as e:
         return f"❌ Error loading model: {str(e)}", f"**Model:** {_current_model_name}"
 
+
+# Accepted pipeline / model types for vision-language auditing
+_VL_PIPELINE_TAGS = {"image-to-text", "visual-question-answering", "image-captioning"}
+_VL_MODEL_TYPES = {"blip", "git", "vit-gpt2", "vit", "clip", "idefics", "llava", "paligemma"}
+
+
+def validate_and_load_image_model(hf_model_id: str):
+    """
+    Validate and load a HuggingFace vision-language model by URL or ID.
+
+    Returns:
+        (status_markdown, model_display_markdown)
+    """
+    global processor, vision_model, _current_model_name
+
+    if not hf_model_id or not hf_model_id.strip():
+        return "⚠️ Please enter a HuggingFace model ID.", f"**Model:** {_current_model_name}"
+
+    model_id = hf_model_id.strip()
+    if model_id.startswith("https://huggingface.co/"):
+        model_id = model_id[len("https://huggingface.co/"):]
+    model_id = model_id.rstrip("/")
+
+    try:
+        from huggingface_hub import model_info as hf_model_info
+        from huggingface_hub.utils import RepositoryNotFoundError, GatedRepoError
+
+        try:
+            info = hf_model_info(model_id)
+        except RepositoryNotFoundError:
+            return (
+                f"❌ **Repository not found:** `{model_id}`\n\nPlease check the model ID or URL.",
+                f"**Model:** {_current_model_name}",
+            )
+        except GatedRepoError:
+            return (
+                f"❌ **Gated repository:** `{model_id}`\n\nAccept the model license on HuggingFace first.",
+                f"**Model:** {_current_model_name}",
+            )
+
+        pipeline_tag = (info.pipeline_tag or "").lower()
+        model_type = ""
+        if info.config and isinstance(info.config, dict):
+            model_type = info.config.get("model_type", "").lower()
+
+        accepted = pipeline_tag in _VL_PIPELINE_TAGS or model_type in _VL_MODEL_TYPES
+
+        if not accepted and pipeline_tag and pipeline_tag not in ("", "null"):
+            return (
+                f"❌ **Unsupported model type:** `{model_id}`\n\n"
+                f"Detected pipeline: `{pipeline_tag}` / architecture: `{model_type or 'unknown'}`\n\n"
+                "Only image-to-text / visual-question-answering models are supported.",
+                f"**Model:** {_current_model_name}",
+            )
+
+        # Attempt load via AutoProcessor + AutoModelForCausalLM
+        processor = None
+        vision_model = None
+        _current_model_name = model_id
+
+        print(f"Loading VL model: {model_id} …")
+        processor = AutoProcessor.from_pretrained(model_id)
+        vision_model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            device_map="auto",
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+        ).eval()
+
+        status_msg = f"✅ **Loaded:** `{model_id}`"
+        model_display = f"**Model:** {model_id}"
+        return status_msg, model_display
+
+    except Exception as e:
+        return (
+            f"❌ **Error loading `{model_id}`:** {str(e)}",
+            f"**Model:** {_current_model_name}",
+        )
+
 def load_sample_images(num_images=5):
     """Load sample images from the dataset"""
     global sample_images

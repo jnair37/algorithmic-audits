@@ -21,24 +21,24 @@ def on_img_version_change(selected, batch_enabled, res1, res2):
     from image_utility import load_image_version
     return load_image_version(selected), show_selected, show_csv
 from resume_utility import (
-    sample_corpus, 
+    sample_corpus,
     process_resume,
     process_batch_resume,
     generate_nl_variations_code,
     explain_resume,
     explain_batch_variation,
-    reset_resume_text, 
-    save_resume_version, 
-    load_resume_version, 
+    reset_resume_text,
+    save_resume_version,
+    load_resume_version,
     clear_resume_comparison,
-    get_resume_model_choices,      # NEW
-    switch_resume_model,
-    initialize_model,              # NEW
-    initialize_llama_model,        # NEW
-    llama_model_name,              # NEW
-    get_suggested_anchor,          # NEW
-    GENDER_PRESET_TEMPLATE,        # NEW
-    CUSTOM_EXTENDED_TEMPLATE       # NEW
+    initialize_model,
+    initialize_llama_model,
+    llama_model_name,
+    get_suggested_anchor,
+    GENDER_PRESET_TEMPLATE,
+    CUSTOM_EXTENDED_TEMPLATE,
+    validate_and_load_resume_model,  # NEW — HF URL loader
+    run_general_lm,                  # NEW — general LM runner
 )
 from image_utility import (
     blip_generate_caption_only,
@@ -49,22 +49,30 @@ from image_utility import (
     load_image_version,
     clear_image_comparison,
     get_image_version_choices,
-    get_image_model_choices,       # NEW
-    switch_image_model,             # NEW
+    switch_image_model,    
+    validate_and_load_image_model,   # NEW — HF URL loader
 )
 from credit_utility import (
-    sample_credit_data, 
-    predict_credit_risk, 
-    get_feature_importance, 
-    compare_scenarios, 
-    reset_credit_data, 
+    sample_credit_data,
+    predict_credit_risk,
+    get_feature_importance,
+    compare_scenarios,
+    reset_credit_data,
     export_credit_report,
-    get_credit_model_choices,      # NEW
-    switch_credit_model            # NEW
+    switch_credit_model,
+    validate_and_load_credit_model,   # NEW — HF URL loader
 )
 
 global has_explanation
 has_explanation = True
+
+
+theme = gr.themes.Soft(
+    primary_hue="blue",
+    secondary_hue="slate",
+    neutral_hue="slate",
+    font=[gr.themes.GoogleFont("Open Sans"), "ui-sans-serif", "system-ui", "sans-serif"],
+)
 
 # NEW: Function to split sample_corpus into three parts
 def split_resume_corpus(corpus_text):
@@ -155,7 +163,9 @@ def explain_resume_split(lead, body, end, continuation_state, fulltext_state, me
         rank_order = json.loads(rank_order_json)
     except:
         rank_order = ["Fidelity", "Simplicity", "Robustness"]
-    return explain_resume(full_text, continuation_state, fulltext_state, method, rank_order=rank_order)
+    # Always use calibrated mode when a rank order is present — triggers ROC-weighted method selection
+    effective_method = "calibrated" if rank_order else method
+    return explain_resume(full_text, continuation_state, fulltext_state, effective_method, rank_order=rank_order)
 
 
 def create_legend():
@@ -175,7 +185,7 @@ def create_legend():
     # Set labels
     cb.set_label('Impact on Response', fontsize=12)
     cb.ax.set_xticks([0, 1])
-    cb.ax.set_xticklabels(['More Negative', 'More Positive'])
+    cb.ax.set_xticklabels(['More Negative', 'More Positive']) 
     
     plt.tight_layout()
     return fig
@@ -273,24 +283,24 @@ LEGEND_HTML = """
     </div>
 </div>
 """
-with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
+with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) as demo:
     with gr.Column(visible=True) as intro_page:
         with gr.Row():
             with gr.Column(scale=1):
                 pass
-            with gr.Column(scale=2):
+            with gr.Column(scale=3):
                 gr.Markdown("<h1 style='text-align: center;'>Algorithmic Audit Toolkit</h1>")
                 gr.Markdown("<h3 style='text-align: center;'>Prototype Auditing Interface</h3>")
                 gr.Markdown("The following interface is meant to be used for gray-box auditing with access to an explanation. Each tab represents a different type of functionality (resume screening, image captioning, and credit risk) for which you can try out multiple models and interpretability methods.")
                 
                 gr.Markdown("### Instructions")
-                gr.Markdown("To assess the model, select an interface below, edit the input on the left side, and press 'Analyze' to see the output. In the middle column, if applicable, use the 'Explain' feature to see likely attributions. Then press 'Save Current Version' to enable comparison between inputs or models on the right column.")
+                gr.Markdown("Choose to audit language, vision-language, or supervised models. You can load any HuggingFace model by pasting its URL or ID in Stage 1. Then you can modify inputs, run analyses in Stage 2, and compare or save results in Stage 3.")
                 
                 gr.Markdown("<br>")
                 with gr.Row():
-                    intro_resume_btn = gr.Button("Resume Screener", variant="primary", size="lg")
-                    intro_image_btn = gr.Button("Image Captioning", variant="primary", size="lg", interactive=False)
-                    intro_credit_btn = gr.Button("Credit Risk", variant="primary", size="lg", interactive=False)
+                    intro_resume_btn = gr.Button("Language", variant="primary", size="lg")
+                    intro_image_btn = gr.Button("Vision-Language", variant="primary", size="lg", interactive=True)
+                    intro_credit_btn = gr.Button("Supervised", variant="primary", size="lg", interactive=True)
             with gr.Column(scale=1):
                 pass
 
@@ -299,9 +309,9 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
             gr.Markdown("### Navigation")
             nav_home_btn = gr.Button("Home", variant="secondary")
             gr.Markdown("---")
-            nav_resume_btn = gr.Button("Resume Screener", variant="primary")
-            nav_image_btn = gr.Button("Image Captioning", variant="secondary", interactive=False)
-            nav_credit_btn = gr.Button("Credit Risk", variant="secondary", interactive=False)
+            nav_resume_btn = gr.Button("Language", variant="primary")
+            nav_image_btn = gr.Button("Vision-Language", variant="secondary", interactive=False)
+            nav_credit_btn = gr.Button("Supervised", variant="secondary", interactive=False)
 
         def navigate(choice):
             show_intro = (choice == "home")
@@ -335,73 +345,98 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
     
                     # ── Step 1: Input & Configuration ───────────────────────────
                     with gr.Tab("Step 1: Input & Configuration", id=0):
-                        gr.Markdown("Modify the resume content to identify potential bias across different characteristics (e.g., gender, race, age). Then configure the analysis parameters below.")
+                        gr.Markdown("Configure the model and choose your use case. Paste a HuggingFace model URL or ID to load any compatible causal or masked language model.")
     
+                        # ── 1. Configure Model ───────────────────────────────────
+                        gr.Markdown("### 1. Configure Model")
                         with gr.Row():
-                            with gr.Column(scale=1):
-                                # Model selection (moved here)
-                                gr.Markdown("### 1. Configure Model")
-                                with gr.Row():
-                                    resume_model_dropdown = gr.Dropdown(
-                                        choices=get_resume_model_choices(),
-                                        value=get_resume_model_choices()[0],
-                                        label="Select Resume Screening Model",
-                                        interactive=True,
-                                        scale=3
-                                    )
-                                    resume_model_status = gr.Markdown("")
-        
-                                temperature_slider = gr.Number(
-                                    label="Model Temperature",
-                                    value=0.45,
-                                    precision=2,
-                                    info="Controls randomness. Lower values are more deterministic; higher values (up to 1) increase variability."
-                                )
+                            resume_model_input = gr.Textbox(
+                                label="HuggingFace Model ID or URL",
+                                placeholder="e.g. EleutherAI/gpt-neo-125M  or  https://huggingface.co/gpt2",
+                                scale=5,
+                                interactive=True,
+                            )
+                            resume_load_btn = gr.Button("Load Model", variant="primary", scale=1)
+                        resume_model_status = gr.Markdown("", elem_id="resume_model_status")
+                        gr.Markdown(
+                            "*Supports any causal LM (text-generation) or masked LM (fill-mask) from HuggingFace.*",
+                        )
 
-                            with gr.Column(scale=2):
-                                gr.Markdown("### 2. Edit Input")
-                                # Lead Prompt Section
-                                gr.Markdown("#### Lead Prompt")
-                                gr.Markdown("*The part of the prompt given to the model before the resume content.*")
-                                resume_lead_input = gr.Textbox(
-                                    value=initial_lead,
-                                    lines=3,
-                                    label="Lead Prompt",
-                                    placeholder="Leading instructions or context..."
-                                )
-                                with gr.Row():
-                                    revert_lead_btn = gr.Button("Revert Lead", variant="secondary", size="sm")
+                        temperature_slider = gr.Number(
+                            label="Model Temperature",
+                            value=0.45,
+                            precision=2,
+                            info="Controls randomness. Lower values are more deterministic; higher values (up to 1) increase variability.",
+                        )
 
-                                # Main Body Section
-                                gr.Markdown("#### Main Resume Body")
-                                resume_body_input = gr.Textbox(
-                                    value=initial_body,
-                                    lines=12,
-                                    label="Resume Content",
-                                    placeholder="Paste the main resume content here..."
-                                )
-                                with gr.Row():
-                                    revert_body_btn = gr.Button("Revert Body", variant="secondary", size="sm")
+                        gr.Markdown("---")
 
-                                # End Prompt Section
-                                gr.Markdown("#### End Prompt")
-                                gr.Markdown("*The part of the prompt given to the model after the resume content.*")
-                                resume_end_input = gr.Textbox(
-                                    value=initial_end,
-                                    lines=3,
-                                    label="End Prompt",
-                                    placeholder="Closing instructions..."
-                                )
-                                with gr.Row():
-                                    revert_end_btn = gr.Button("Revert End", variant="secondary", size="sm")
-    
+                        # ── 2. Select Use Case ───────────────────────────────────
+                        gr.Markdown("### 2. Select Use Case")
+                        resume_usecase_radio = gr.Radio(
+                            choices=["General (Causal / Masked LM)", "Resume Screening"],
+                            value="General (Causal / Masked LM)",
+                            label="Auditing Mode",
+                            info="Choose the analysis context. Resume Screening uses a structured hiring prompt; General lets you run any prompt.",
+                        )
+
+                        gr.Markdown("---")
+                        gr.Markdown("### 3. Edit Input")
+
+                        # ── General LM panel ─────────────────────────────────────
+                        with gr.Column(visible=True) as general_lm_panel:
+                            gr.Markdown("#### Prompt")
+                            general_prompt_input = gr.Textbox(
+                                lines=8,
+                                label="Prompt",
+                                placeholder="Enter your prompt here. For masked LMs, add [MASK] where you want the model to predict.",
+                                value="The quick brown fox jumps over the",
+                            )
+
+                        # ── Resume Screening panel ───────────────────────────────
+                        with gr.Column(visible=False) as resume_panel:
+                            # Lead Prompt Section
+                            gr.Markdown("#### Lead Prompt")
+                            gr.Markdown("*The part of the prompt given to the model before the resume content.*")
+                            resume_lead_input = gr.Textbox(
+                                value=initial_lead,
+                                lines=3,
+                                label="Lead Prompt",
+                                placeholder="Leading instructions or context...",
+                            )
+                            with gr.Row():
+                                revert_lead_btn = gr.Button("Revert Lead", variant="secondary", size="sm")
+
+                            # Main Body Section
+                            gr.Markdown("#### Main Resume Body")
+                            resume_body_input = gr.Textbox(
+                                value=initial_body,
+                                lines=12,
+                                label="Resume Content",
+                                placeholder="Paste the main resume content here...",
+                            )
+                            with gr.Row():
+                                revert_body_btn = gr.Button("Revert Body", variant="secondary", size="sm")
+
+                            # End Prompt Section
+                            gr.Markdown("#### End Prompt")
+                            gr.Markdown("*The part of the prompt given to the model after the resume content.*")
+                            resume_end_input = gr.Textbox(
+                                value=initial_end,
+                                lines=3,
+                                label="End Prompt",
+                                placeholder="Closing instructions...",
+                            )
+                            with gr.Row():
+                                revert_end_btn = gr.Button("Revert End", variant="secondary", size="sm")
+
                         gr.Markdown("---")
                         gr.Markdown("### Enable Batch Analysis")
                         gr.Markdown("**Analyze many variations to understand statistical patterns across demographics**")
                         batch_analysis_toggle = gr.Checkbox(
                             label="Enable Batch Audit Mode",
                             value=False,
-                            info="Run analysis with LLM or Preset variations"
+                            info="Run analysis with LLM or Preset variations (only available in Resume Screening mode)"
                         )
     
                         batch_preset_selection = gr.Dropdown(
@@ -449,7 +484,14 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                             resume_analyze_btn = gr.Button(
                                 "Analyze (Single Run)", 
                                 variant="primary", 
-                                elem_classes=["btn-orange"]
+                                elem_classes=["btn-orange"],
+                                visible=False
+                            )
+                            general_analyze_btn = gr.Button(
+                                "Generate Output", 
+                                variant="primary", 
+                                elem_classes=["btn-orange"],
+                                visible=True
                             )
                             batch_execute_btn = gr.Button(
                                 "Execute Batch Audit", 
@@ -464,6 +506,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                             step1_next_btn = gr.Button("Next: View Results →", variant="primary", interactive=False)
                             step1_loading_msg = gr.Markdown("⏳ **Analysis in progress... Please wait.**", visible=False)
     
+
                     # ── Step 2: Results & Interpretation ────────────────────────
                     with gr.Tab("Step 2: Results & Interpretation", id=1, interactive=False) as step2_tab:
                         gr.Markdown("View the model's generated content and explore its decision-making process.")
@@ -474,7 +517,19 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                             value="<p>Click 'Analyze' in Step 1 to see results...</p>",
                             elem_classes=["dark-text-contrast"]
                         )
-                        with gr.Accordion("Advanced: Calibrate Explanations", open=False, visible=False):
+                        
+                        with gr.Column(visible=True) as general_token_panel:
+                            gr.Markdown("#### Select a Token to Explain")
+                            with gr.Row():
+                                general_token_slider = gr.Slider(
+                                    minimum=0, maximum=50, value=0, step=1,
+                                    label="Token Index",
+                                    interactive=True,
+                                )
+                                general_token_display = gr.Markdown("*Run the model first to see available tokens.*")
+                            general_explain_btn = gr.Button("Explain Selected Token", variant="primary", interactive=False)
+                        
+                        with gr.Accordion("Advanced: Calibrate Explanations", open=False, visible=False) as calibration_accordion:
                             gr.Markdown("### Rank what you value in an explanation")
                             gr.HTML(CALIBRATION_WIDGET_HTML)
                             explanation_rank_state = gr.Textbox(value='["Fidelity", "Simplicity", "Robustness"]', visible=False, label="Calibration Rank Status")
@@ -610,7 +665,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                         explanation_rank_state.change(fn=lambda: gr.update(visible=True), outputs=ranking_saved_msg)
 
                         resume_method_dropdown = gr.State(value="integrated_gradients")
-                        resume_explain_btn = gr.Button("Explain", variant='primary', interactive=True, visible=has_explanation)
+                        resume_explain_btn = gr.Button("Explain", variant='primary', interactive=has_explanation, visible=False)
                         with gr.Column():
                             explanation_html = gr.HTML(
                                 label="Explanation",
@@ -628,10 +683,9 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                             batch_results_state = gr.State([])
     
                             with gr.Row():
-                                carousel_index_slider = gr.Number(
-                                    label="Select Variation Index",
-                                    value=0,
-                                    precision=0,
+                                carousel_index_slider = gr.Slider(
+                                    minimum=0, maximum=19, value=0, step=1,
+                                    label="Select Variation index",
                                     interactive=True
                                 )
     
@@ -662,8 +716,8 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                             step2_next_btn = gr.Button("Next: Compare & Track →", variant="primary")
                         autosave_status = gr.Markdown("", visible=False)
     
-                    # ── Step 3: Compare & Track ──────────────────────────────────
-                    with gr.Tab("Step 3: Compare & Track", id=2, interactive=False) as step3_tab:
+                    # ── Step 3: Download, Share, and Compare ──────────────────────────────────
+                    with gr.Tab("Step 3: Download, Share, and Compare", id=2, interactive=False) as step3_tab:
                         gr.Markdown("Save versions to track your audit progress and compare different model behaviors side-by-side.")
                         gr.Markdown("*Versions are autosaved when you navigate here from Step 2.*")
     
@@ -710,6 +764,44 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                             step3_back_btn = gr.Button("← Back to Results", variant="secondary")
     
                 # ── Event Handlers ───────────────────────────────────────────────
+    
+                # ── Model Loading & Use Case Toggles ─────────────────────────────
+                
+                # Language Tab Model Load
+                resume_load_btn.click(
+                    fn=validate_and_load_resume_model,
+                    inputs=resume_model_input,
+                    outputs=[resume_model_status, resume_current_model_display]
+                )
+
+                # Language Tab Use Case Toggle
+                def toggle_language_usecase(usecase):
+                    is_resume = "Resume Screening" in usecase
+                    return (
+                        gr.update(visible=not is_resume),  # general_lm_panel
+                        gr.update(visible=is_resume),      # resume_panel
+                        gr.update(visible=is_resume),      # batch_analysis_toggle
+                        gr.update(visible=not is_resume),  # general_analyze_btn
+                        gr.update(visible=is_resume),      # resume_analyze_btn
+                        gr.update(visible=is_resume),      # resume_reset_all_btn
+                        gr.update(visible=not is_resume),  # general_token_panel
+                        gr.update(visible=is_resume),      # resume_explain_btn
+                        gr.update(visible=is_resume),      # calibration_accordion
+                        gr.update(visible=is_resume),      # batch_carousel_accordion
+                    )
+                
+                resume_usecase_radio.change(
+                    fn=toggle_language_usecase,
+                    inputs=resume_usecase_radio,
+                    outputs=[
+                        general_lm_panel, resume_panel, batch_analysis_toggle,
+                        general_analyze_btn, resume_analyze_btn, resume_reset_all_btn,
+                        general_token_panel, resume_explain_btn, calibration_accordion,
+                        batch_carousel_accordion
+                    ]
+                )
+
+
     
                 # Navigation: Step 1 → Step 2
                 step1_next_btn.click(
@@ -859,9 +951,85 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                     inputs=None,
                     outputs=[resume_lead_input, resume_body_input, resume_end_input]
                 )
-    
+
+                # ── General LM Handlers ──────────────────────────────────────────
+                def handle_general_analyze(prompt, temp):
+                    from resume_utility import run_general_lm
+                    html_output, continuation, full_text, model_display, tokens_list = run_general_lm(prompt, 0, temp)
+                    
+                    if tokens_list:
+                        clean_tokens = [t.replace('Ġ', ' ').replace('Â', '').strip() or t for t in tokens_list]
+                        tok_str = " | ".join([f"{i}: {t}" for i, t in enumerate(clean_tokens)])
+                        tok_display = f"**Tokens:** {tok_str}"
+                        slider_update = gr.update(maximum=len(tokens_list)-1, value=0, interactive=True)
+                        explain_interactive = True
+                    else:
+                        tok_display = "*No tokens generated.*"
+                        slider_update = gr.update(maximum=0, value=0, interactive=False)
+                        explain_interactive = False
+                        
+                    return (
+                        html_output, continuation, full_text, model_display,
+                        slider_update, tok_display, gr.update(interactive=explain_interactive),
+                        gr.update(visible=True, interactive=True, elem_classes=["btn-green"]),
+                        gr.update(visible=False),
+                        gr.update(interactive=True), gr.update(interactive=True)
+                    )
+
                 def start_analysis_loading():
                     return gr.update(visible=False), gr.update(visible=True)
+
+                general_analyze_btn.click(
+                    fn=start_analysis_loading,
+                    inputs=None,
+                    outputs=[step1_next_btn, step1_loading_msg]
+                ).then(
+                    fn=handle_general_analyze,
+                    inputs=[general_prompt_input, temperature_slider],
+                    outputs=[
+                        pure_html_output, continuation_state, fulltext_state,
+                        resume_current_model_display, general_token_slider, general_token_display, general_explain_btn,
+                        step1_next_btn, step1_loading_msg, step2_tab, step3_tab
+                    ],
+                    show_progress="full"
+                )
+
+                def handle_general_explain(prompt, continuation, token_idx, rank_state):
+                    from resume_utility import explain_feature_attribution, _model, _tokenizer
+                    if not _model or not _tokenizer:
+                        return "<p>Model not loaded. Please load a model and run analysis first.</p>"
+                    
+                    import json
+                    try:
+                        ranks = json.loads(rank_state)
+                    except:
+                        ranks = ["Fidelity", "Simplicity", "Robustness"]
+                    
+                    try:
+                        expl_html = explain_feature_attribution(
+                            model=_model, tokenizer=_tokenizer,
+                            input_text=prompt, target_text=prompt + (continuation if continuation else ""),
+                            attribution_method="integrated_gradients",
+                            ranks=ranks,
+                            explain_token_index=int(token_idx)
+                        )
+                        return expl_html
+                    except Exception as e:
+                        return f"<p style='color:red;'><strong>Error computing attribution:</strong> {str(e)}</p>"
+                    
+                general_explain_btn.click(
+                    fn=lambda: gr.update(value="<p><i>Computing attribution... Please wait.</i></p>"),
+                    outputs=explanation_html
+                ).then(
+                    fn=handle_general_explain,
+                    inputs=[general_prompt_input, continuation_state, general_token_slider, explanation_rank_state],
+                    outputs=explanation_html,
+                    show_progress="full"
+                ).then(
+                    fn=lambda: gr.update(selected=1),
+                    outputs=screener_steps
+                )
+                # ─────────────────────────────────────────────────────────────────
     
                 def process_and_enable_next(lead, body, end, rank_order, temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code):
                     results = process_resume_split(lead, body, end, "integrated_gradients", temp, batch_enabled, batch_token, batch_num_vars, batch_dimension, variations_code)
@@ -1017,11 +1185,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                     outputs=[resume_comparison_output_b, resume_version_dropdown_b]
                 )
     
-                resume_model_dropdown.change(
-                    fn=switch_resume_model,
-                    inputs=resume_model_dropdown,
-                    outputs=[resume_model_status, resume_current_model_display]
-                )
+
     
     
             # Section 2: Image Captioning — 3-tab flow (mirrors Resume Screener)
@@ -1055,6 +1219,21 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
     
                         with gr.Row():
                             with gr.Column(scale=1):
+                                with gr.Accordion("1. Configure Model", open=True):
+                                    gr.Markdown("Replace the default vision-language model with a HuggingFace one.")
+                                    image_model_input = gr.Textbox(
+                                        label="HuggingFace Model ID or URL",
+                                        placeholder="e.g. Salesforce/blip-image-captioning-base",
+                                    )
+                                    image_load_btn = gr.Button("Load Model", variant="primary")
+                                    image_model_status = gr.Markdown("")
+                                    image_usecase_radio = gr.Radio(
+                                        ["General (VL Captioning)"], 
+                                        value="General (VL Captioning)", 
+                                        label="Use Case", 
+                                        visible=False
+                                    )
+
                                 with gr.Accordion("2. Edit Input", open=True):
                                     img_batch_toggle = gr.Checkbox(
                                         label="Enable Batch Mode",
@@ -1097,14 +1276,15 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                                 with gr.Accordion("1. Configure Model", open=True):
                                     # Model selection
                                     with gr.Row():
-                                        image_model_dropdown = gr.Dropdown(
-                                            choices=get_image_model_choices(),
-                                            value=get_image_model_choices()[0],
-                                            label="Select Image Model",
+                                        image_model_input = gr.Textbox(
+                                            label="HuggingFace Model ID or URL",
+                                            placeholder="e.g. Salesforce/blip-image-captioning-base",
+                                            scale=5,
                                             interactive=True,
-                                            scale=3
                                         )
-                                        image_model_status = gr.Markdown("")
+                                        image_load_btn = gr.Button("Load Model", variant="primary", scale=1)
+                                    image_model_status = gr.Markdown("", elem_id="image_model_status")
+                                    gr.Markdown("*Supports image-to-text / vision-language models from HuggingFace.*")
                                         
                                     image_current_model_display = gr.Markdown("**Model:** microsoft/git-large-coco")
                                         
@@ -1258,8 +1438,8 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                             )
                         img_autosave_status = gr.Markdown("", visible=False)
     
-                    # ── Step 3: Compare & Track ───────────────────────────────────
-                    with gr.Tab("Step 3: Compare & Track", id=2, interactive=False) as img_step3_tab:
+                    # ── Step 3: Download, Share, and Compare ───────────────────────────────────
+                    with gr.Tab("Step 3: Download, Share, and Compare", id=2, interactive=False) as img_step3_tab:
                         gr.Markdown(
                             "Save versions in Step 2 to track audit progress and compare "
                             "different images or occlusion conditions side-by-side."
@@ -1487,6 +1667,13 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                     ]
                 )
     
+                # Image Content Handlers
+                image_load_btn.click(
+                    fn=validate_and_load_image_model,
+                    inputs=image_model_input,
+                    outputs=[image_model_status, image_current_model_display]
+                )
+
                 # Step navigation
                 img_step1_next_btn.click(
                     fn=lambda: gr.update(selected=1),
@@ -1501,11 +1688,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                     inputs=None, outputs=image_steps
                 )
     
-                image_model_dropdown.change(
-                    fn=switch_image_model,
-                    inputs=image_model_dropdown,
-                    outputs=[image_model_status, image_current_model_display]
-                )
+
     
                 # Autosave → Step 3
                 def img_autosave_and_advance(
@@ -1593,16 +1776,19 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
                 gr.Markdown("### Credit Risk Model Auditor")
                 gr.Markdown("Analyze credit risk predictions and understand which factors influence the model's decisions.")
                 
-                # ADDED: Model selection dropdown
+                # Model selection dropdown replacement
                 with gr.Row():
-                    credit_model_dropdown = gr.Dropdown(
-                        choices=get_credit_model_choices(),
-                        value=get_credit_model_choices()[0],
-                        label="Select Credit Risk Model",
+                    credit_model_input = gr.Textbox(
+                        label="HuggingFace Model ID or URL",
+                        placeholder="e.g. Alfazril/credit-risk-prediction",
+                        scale=5,
                         interactive=True,
-                        scale=3
                     )
-                    credit_model_status = gr.Markdown("")
+                    credit_load_btn = gr.Button("Load Model", variant="primary", scale=1)
+                credit_model_status = gr.Markdown("", elem_id="credit_model_status")
+                gr.Markdown(
+                    "*Requires a scikit-learn compatible tabular/text classification model saved as .pkl or .joblib on HuggingFace.*"
+                )
     
                 with gr.Row():
                     # Left column - Input features
@@ -1722,20 +1908,13 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css) as demo:
             img_download_selected_btn.click(fn=img_export_selected, inputs=img_version_dropdown, outputs=img_download_selected_btn)
             img_download_csv_btn.click(fn=img_export_csv, inputs=[img_batch_results_g1, img_batch_results_g2], outputs=img_download_csv_btn)
             
-            # Image Model change
-            from image_utility import switch_image_model
-            image_model_dropdown.change(
-                fn=switch_image_model,
-                inputs=image_model_dropdown,
-                outputs=[image_model_status, gr.Markdown(visible=False)]
-            )
-            
-            # Credit Model change
-            credit_model_dropdown.change(
-                fn=switch_credit_model,
-                inputs=credit_model_dropdown,
+            # Credit Model Load
+            credit_load_btn.click(
+                fn=validate_and_load_credit_model,
+                inputs=credit_model_input,
                 outputs=[credit_model_status, credit_current_model_display]
             )
+
     
     # Navbar Handlers
     nav_outputs = [intro_page, main_app_layout, resume_section, image_section, credit_section, nav_resume_btn, nav_image_btn, nav_credit_btn]

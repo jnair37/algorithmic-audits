@@ -84,7 +84,7 @@ def _get_top_k_tokens(logits, tokenizer, k=10):
     return top_tokens, top_probs.cpu().numpy(), top_indices.cpu().numpy()
 
 
-def _generate_continuation(text, model, tokenizer, max_new_tokens=10, temperature=1.0):
+def _generate_continuation(text, model, tokenizer, max_new_tokens=100, temperature=1.0):
     """
     Generate a continuation of the text.
 
@@ -326,7 +326,9 @@ def _get_integrated_gradients_causal(text, model, tokenizer, target_token_id=Non
 
 def _get_attention_weights_causal(text, model, tokenizer, layer=-1, position=-1, target_token_id=None):
 
+    device = next(model.parameters()).device
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    inputs = {k: v.to(device) for k, v in inputs.items()}  # Bug 4 fix: move to model device
 
     model.eval()
     with torch.no_grad():
@@ -374,9 +376,10 @@ def _get_gradient_x_input_causal(text, model, tokenizer, target_token_id=None, p
     except ImportError:
         raise ImportError("Captum required. Install: pip install captum")
 
-    # Tokenize
+    # Tokenize and move to model device (Bug 4 fix: consistent with other methods)
+    device = next(model.parameters()).device
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-    input_ids = inputs['input_ids']
+    input_ids = inputs['input_ids'].to(device)
 
     # Get next token prediction
     model.eval()
@@ -446,9 +449,10 @@ def _get_layer_integrated_gradients_causal(text, model, tokenizer, target_token_
     except ImportError:
         raise ImportError("Captum required. Install: pip install captum")
 
-    # Tokenize
+    # Tokenize and move to model device (Bug 4 fix)
+    device = next(model.parameters()).device
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-    input_ids = inputs['input_ids']
+    input_ids = inputs['input_ids'].to(device)
 
     # Get prediction
     model.eval()
@@ -1302,7 +1306,6 @@ def process_resume(text, method, temperature):
     # Wrap in HTML for direct display
     html_output = f"""
     <div style="padding: 20px; background-color: #f0f0f0; border-radius: 5px;">
-        <h3>Your Text:</h3>
         <p style="font-size: 16px; color: #111;">{continuation}</p>
     </div>
     """
@@ -2173,28 +2176,34 @@ def get_calibrated_explanation(
     progress=None
 ):
     """
-    Iterate over multiple attribution methods and return the best one based on weighted metrics.
-    Caches the result per model and rank order.
+    Iterate over multiple attribution methods and return the best one based on ROC-weighted metrics.
+    Caches the result per (model_name, rank_order) — subsequent calls are instant.
+
+    Metrics (all minimised — they are the OPPOSITE of the desired qualities):
+      • Infidelity   (Captum infidelity)      ← measures lack of Fidelity
+      • Sensitivity  (Captum sensitivity_max) ← measures lack of Robustness
+      • Complexity   (Quantus Complexity)     ← measures lack of Simplicity
+
+    Methods evaluated via get_attribution() from test_get_attribution.py (inseq-backed).
     """
     global _CALIBRATION_CACHE, lm_model_name
-    
-    # Create cache key
+
+    # ── Cache lookup ──────────────────────────────────────────────────────────
     cache_key = (lm_model_name, tuple(rank_order))
-    
+
     if cache_key in _CALIBRATION_CACHE:
         cached_method = _CALIBRATION_CACHE[cache_key]
         if progress:
             progress(0.5, desc=f"Using cached optimal method: {cached_method}")
         print(f"CACHE HIT: Using optimal method '{cached_method}' for model '{lm_model_name}'")
-        
-        # Step 1: Select target token
+
         target_token_id, target_token_str, token_position = _select_target_token_from_continuation(
             continuation, tokenizer
         )
         if target_token_id is None:
             raise ValueError("Could not select a target token")
 
-        # Step 2: Create extended input
+
         if token_position == 0:
             extended_input = text
         else:
@@ -2204,34 +2213,57 @@ def get_calibrated_explanation(
             extended_input = text + partial_continuation
 
         explanation = get_explanation(
-            extended_input, model, tokenizer, method=cached_method, 
+            extended_input, model, tokenizer, method=cached_method,
             target_token_id=target_token_id, position=-1
         )
         return explanation, continuation, target_token_str, extended_input
 
+    # ── ROC weights ───────────────────────────────────────────────────────────
     if progress:
-        progress(0, desc="Calibrating weights...")
-    
-    weights = calculate_roc_weights(rank_order)
-    w_fidelity = weights.get("Fidelity", 0.33)
+        progress(0, desc="Computing ROC weights...")
+
+    weights      = calculate_roc_weights(rank_order)
+    w_fidelity   = weights.get("Fidelity",   0.33)
     w_simplicity = weights.get("Simplicity", 0.33)
     w_robustness = weights.get("Robustness", 0.33)
+    print(f"[calibration] ROC weights: {weights}")
 
-    # Methods to test
-    method_names = ["integrated_gradients", "attention", "gradient_x_input"]
-    
-    best_score = float('inf')
-    best_explanation = None
-    best_method_name = ""
+    # ── Attempt to import inseq-backed get_attribution ────────────────────────
+    try:
+        from test_get_attribution import (
+            get_attribution as _inseq_get_attribution,
+            _ensure_tokens_for_inseq,
+        )
+        import inseq as _inseq
+        _inseq_available = True
+    except ImportError as _imp_err:
+        print(f"[calibration] inseq/test_get_attribution unavailable ({_imp_err}); using legacy helpers")
+        _inseq_available = False
 
-    # Step 1: Select target token
+    # All stable inseq methods to evaluate
+    # Bug 5 fix: only include methods supported by the legacy get_explanation() fallback.
+    # saliency, input_x_gradient, gradient_shap are inseq-only — excluded when inseq unavailable.
+    CALIBRATION_METHODS = [
+        "integrated_gradients",
+        "layer_integrated_gradients",
+        "gradient_x_input",
+        "attention",
+    ] if not _inseq_available else [
+        "integrated_gradients",
+        "layer_integrated_gradients",
+        "saliency",
+        "input_x_gradient",
+        "gradient_shap",
+        "attention",
+    ]
+
+    # ── Select target token & extended input ──────────────────────────────────
     target_token_id, target_token_str, token_position = _select_target_token_from_continuation(
         continuation, tokenizer
     )
     if target_token_id is None:
         raise ValueError("Could not select a target token")
 
-    # Step 2: Create extended input
     if token_position == 0:
         extended_input = text
     else:
@@ -2240,63 +2272,180 @@ def get_calibrated_explanation(
         partial_continuation = tokenizer.decode(tokens_before_target, skip_special_tokens=True)
         extended_input = text + partial_continuation
 
-    # Prepare inputs for metrics
-    inputs_ids = tokenizer(extended_input, return_tensors="pt")['input_ids'].to(model.device)
-    
-    for i, m_name in enumerate(method_names):
-        if progress:
-            progress(0.1 + (0.8 * i / len(method_names)), desc=f"Evaluating {m_name}...")
+    # ── Embedding inputs for Captum metric functions ──────────────────────────
+    inputs_enc     = tokenizer(extended_input, return_tensors="pt").to(model.device)
+    input_embeds   = model.get_input_embeddings()(inputs_enc['input_ids']).detach()  # (1, seq, hidden)
+    attention_mask = inputs_enc['attention_mask']
 
-        # 1. Get Explanation
-        explanation = get_explanation(
-            extended_input, model, tokenizer, method=m_name, 
-            target_token_id=target_token_id, position=-1
+    def _forward_from_embeds(embeds):
+        """Scalar logit of target token at last position, given embedding input."""
+        out = model(inputs_embeds=embeds, attention_mask=attention_mask)
+        return out.logits[0, -1, target_token_id].unsqueeze(0)
+
+    def _perturb_fn(embeds):
+        """Gaussian noise perturbation for Captum infidelity."""
+        noise = torch.randn_like(embeds) * 0.05
+        return noise, embeds + noise
+        
+    def _forward_from_tokens(input_ids):
+        out = model(input_ids=input_ids, attention_mask=attention_mask)
+        return out.logits[0, -1, target_token_id].unsqueeze(0)
+
+    def _perturb_fn_tokens(input_ids):
+        # Add small integer noise, clamp to valid vocab range
+        noise = torch.randint_like(input_ids, low=-2, high=2)
+        perturbed = (input_ids + noise).clamp(0, model.config.vocab_size - 1)
+        return (input_ids - perturbed).float(), perturbed
+
+    # def _attr_func_for_sensitivity(embeds):
+    #     """Re-run IG (cheap, 10 steps) for sensitivity_max perturbation."""
+    #     ig = IntegratedGradients(_forward_from_embeds)
+    #     return ig.attribute(embeds, n_steps=10)
+
+    def _attr_func_for_sensitivity(input_ids):
+        embeds = model.get_input_embeddings()(input_ids).detach().requires_grad_(True)
+        ig = IntegratedGradients(_forward_from_embeds)
+        return ig.attribute(embeds, n_steps=10).sum(dim=-1, keepdim=True).expand_as(embeds)
+
+    # Build inseq_model once (method is overridden per .attribute() call)
+    if _inseq_available:
+        _tok_inseq   = _ensure_tokens_for_inseq(model, tokenizer)
+        _inseq_model = _inseq.load_model(model, "integrated_gradients", tokenizer=_tok_inseq)
+
+    # ── Main evaluation loop ──────────────────────────────────────────────────
+    best_score       = float('inf')
+    best_explanation = None
+    best_method_name = ""
+
+    for idx, m_name in enumerate(CALIBRATION_METHODS):
+        if progress:
+            progress(0.05 + 0.80 * idx / len(CALIBRATION_METHODS),
+                     desc=f"Evaluating {m_name}...")
+
+        # 1. Attribution
+        try:
+            if _inseq_available:
+                explanation = _inseq_get_attribution(
+                    extended_input, model, tokenizer, _inseq_model,
+                    method=m_name,
+                    target_token_id=target_token_id,
+                )
+            else:
+                explanation = get_explanation(
+                    extended_input, model, tokenizer, method=m_name,
+                    target_token_id=target_token_id, position=-1
+                )
+        except Exception as exc:
+            print(f"  [calibration] {m_name}: attribution failed ({exc}) — skipping")
+            continue
+
+        # Bug 3 fix: read the target token's column, not column 0
+        attr_1d = explanation.values[0, :, target_token_id].astype(np.float32)
+
+        # 2. Infidelity — Captum (Fidelity, minimise)
+        # Bug 1 fix: use embedding inputs so shapes match (1, seq, hidden) for both
+        try:
+            hidden_size = input_embeds.shape[-1]
+            attr_embeds = (
+                torch.tensor(attr_1d, dtype=torch.float32, device=model.device)
+                .unsqueeze(0).unsqueeze(-1)          # (1, seq, 1)
+                .expand(1, input_embeds.shape[1], hidden_size)  # (1, seq, hidden)
+                .clone()                             # make contiguous
+            )
+            i_score = float(
+                infidelity(
+                    _forward_from_embeds,
+                    _perturb_fn,
+                    input_embeds,                    # (1, seq, hidden) — matches attr_embeds
+                    attr_embeds,
+                    n_perturb_samples=5,
+                ).mean()
+            )
+            if not np.isfinite(i_score):
+                i_score = 1.0
+        except Exception as exc:
+            print(f"  [calibration] {m_name}: infidelity error ({exc})")
+            i_score = 1.0
+
+        # 3. Sensitivity — Captum (Robustness, minimise)
+        # Bug 2 fix: pass embeddings so get_input_embeddings() receives a Tensor not a tuple
+        try:
+            def _attr_func_for_sensitivity_embeds(embeds):
+                ig = IntegratedGradients(_forward_from_embeds)
+                return ig.attribute(embeds, n_steps=10)
+
+            s_score = float(
+                sensitivity_max(
+                    _attr_func_for_sensitivity_embeds,
+                    input_embeds,                    # (1, seq, hidden) — already a Tensor
+                    n_perturb_samples=4,
+                ).mean()
+            )
+            if not np.isfinite(s_score):
+                s_score = 1.0
+        except Exception as exc:
+            print(f"  [calibration] {m_name}: sensitivity error ({exc})")
+            s_score = 1.0
+
+        # 4. Complexity — Quantus (Simplicity, minimise)
+        try:
+            attr_3d  = attr_1d.reshape(1, 1, -1)
+            x_dummy  = np.zeros_like(attr_3d)
+            c_scores = quantus.Complexity()(
+                model=None,
+                x_batch=x_dummy,
+                y_batch=np.array([0]),
+                a_batch=attr_3d,
+                explain_func=lambda model, inputs, targets, **kw: attr_3d,
+            )
+            c_score = float(np.mean(c_scores))
+            if not np.isfinite(c_score):
+                raise ValueError("non-finite")
+        except Exception as exc:
+            # Fallback: fraction of tokens needed to cover 90 % of attribution mass
+            print(f"  [calibration] {m_name}: Quantus Complexity fallback ({exc})")
+            abs_a = np.abs(attr_1d)
+            total = abs_a.sum()
+            if total > 0:
+                normed = np.sort(abs_a / total)[::-1]
+                n90    = int(np.searchsorted(np.cumsum(normed), 0.90)) + 1
+                c_score = n90 / max(len(attr_1d), 1)
+            else:
+                c_score = 1.0
+
+        # 5. ROC-weighted composite — all three are "negative" traits → minimise
+        total_score = (w_fidelity   * i_score
+                       + w_simplicity * c_score
+                       + w_robustness * s_score)
+        print(
+            f"  [calibration] {m_name:30s}  "
+            f"infidelity={i_score:.4f}  complexity={c_score:.4f}  sensitivity={s_score:.4f}  "
+            f"→  weighted={total_score:.4f}"
         )
 
-        # 2. Compute Metrics
-        # --- Simplicity (Complexity from Quantus) ---
-        try:
-            complexity_metric = quantus.Complexity()
-            # Quantus expects specific shapes; we use a simplified version for text
-            # Complexity = number of non-zero attributions or similar
-            attr_flat = explanation.values[0, :, target_token_id]
-            c_score = np.count_nonzero(np.abs(attr_flat) > (np.max(np.abs(attr_flat)) * 0.1)) / len(attr_flat)
-        except:
-            c_score = 0.5
-
-        # --- Fidelity (Infidelity Proxy) ---
-        # Infidelity measures how well attributions follow model behavior under perturbations
-        try:
-            # Simple proxy: variance of attributions (less concentrated = more likely "infidelity" in some contexts)
-            # or use Captum's infidelity if possible. 
-            # Given the constraints, we use a heuristic based on attribution magnitude
-            i_score = np.mean(np.abs(explanation.values)) 
-        except:
-            i_score = 0.5
-
-        # --- Robustness (Sensitivity Proxy) ---
-        try:
-            # Sensitivity: how much the explanation changes with tiny input noise
-            s_score = np.std(explanation.values)
-        except:
-            s_score = 0.5
-
-        # Calculate final weighted score to MINIMIZE
-        total_score = w_fidelity * i_score + w_simplicity * c_score + w_robustness * s_score
-        
-        print(f"Method {m_name}: Score={total_score:.4f} (I={i_score:.2f}, C={c_score:.2f}, S={s_score:.2f})")
-
         if total_score < best_score:
-            best_score = total_score
+            best_score       = total_score
             best_explanation = explanation
             best_method_name = m_name
 
-    if progress:
-        progress(1.0, desc=f"Selected best method: {best_method_name}")
+    # ── Fallback if every method errored out ──────────────────────────────────
+    if best_explanation is None:
+        print("[calibration] All methods failed — falling back to integrated_gradients")
+        best_method_name = "integrated_gradients"
+        best_explanation = get_explanation(
+            extended_input, model, tokenizer,
+            method=best_method_name, target_token_id=target_token_id, position=-1
+        )
 
-    # Store in cache
+    if progress:
+        progress(1.0, desc=f"Selected: {best_method_name}")
+
+    # Cache result so future Explain clicks are instant
     _CALIBRATION_CACHE[cache_key] = best_method_name
-    print(f"CACHE SAVE: Optimal method for '{lm_model_name}' is '{best_method_name}'")
+    print(
+        f"CACHE SAVE: rank={rank_order} → '{best_method_name}' "
+        f"(score={best_score:.4f}) for '{lm_model_name}'"
+    )
 
     return best_explanation, continuation, target_token_str, extended_input
 
@@ -2463,3 +2612,239 @@ def export_batch_csv(batch_results):
             writer.writerow([res['variation'], res['category'], res['sentiment'], res['avg_score'], res['continuation']])
         path = f.name
     return path
+
+
+# ============================================================================
+# HuggingFace URL-based model loading (general + specific use cases)
+# ============================================================================
+
+# Architecture families accepted for language auditing
+_CAUSAL_LM_TYPES = {
+    "gpt2", "gpt_neo", "gpt_neox", "gpt-j", "llama", "mistral", "falcon",
+    "bloom", "opt", "mpt", "phi", "stablelm", "qwen", "gemma", "codegen",
+    "rwkv", "mamba", "pythia", "gpt_bigcode", "persimmon", "olmo",
+    "text-generation",  # pipeline_tag alias
+}
+_MASKED_LM_TYPES = {
+    "bert", "roberta", "distilbert", "albert", "electra", "deberta",
+    "deberta-v2", "xlm-roberta", "camembert", "ernie", "mpnet",
+    "fill-mask",  # pipeline_tag alias
+}
+_ACCEPTED_LM_TYPES = _CAUSAL_LM_TYPES | _MASKED_LM_TYPES
+
+
+def validate_and_load_resume_model(hf_model_id: str):
+    """
+    Validate a HuggingFace model ID / URL for use as a language model, then load it.
+
+    Returns:
+        (status_markdown, model_display_markdown)
+    """
+    global _tokenizer, _model, lm_model_name
+
+    if not hf_model_id or not hf_model_id.strip():
+        return "⚠️ Please enter a HuggingFace model ID.", f"**Model:** {lm_model_name}"
+
+    # Normalise: strip whitespace, strip leading https://huggingface.co/
+    model_id = hf_model_id.strip()
+    if model_id.startswith("https://huggingface.co/"):
+        model_id = model_id[len("https://huggingface.co/"):]
+    model_id = model_id.rstrip("/")
+
+    try:
+        from huggingface_hub import model_info as hf_model_info
+        from huggingface_hub.utils import RepositoryNotFoundError, GatedRepoError
+
+        try:
+            info = hf_model_info(model_id)
+        except RepositoryNotFoundError:
+            return (
+                f"❌ **Repository not found:** `{model_id}`\n\nPlease check the model ID or URL.",
+                f"**Model:** {lm_model_name}",
+            )
+        except GatedRepoError:
+            return (
+                f"❌ **Gated repository:** `{model_id}`\n\nYou need to accept the model's license on HuggingFace first.",
+                f"**Model:** {lm_model_name}",
+            )
+
+        # Determine model type: check pipeline_tag and model card config
+        pipeline_tag = (info.pipeline_tag or "").lower()
+        model_type = ""
+        if info.config and isinstance(info.config, dict):
+            model_type = info.config.get("model_type", "").lower()
+
+        accepted = pipeline_tag in _ACCEPTED_LM_TYPES or model_type in _ACCEPTED_LM_TYPES
+
+        if not accepted and pipeline_tag and pipeline_tag not in ("", "null"):
+            return (
+                f"❌ **Unsupported model type:** `{model_id}`\n\n"
+                f"Detected pipeline: `{pipeline_tag}` / architecture: `{model_type or 'unknown'}`\n\n"
+                "Only causal LMs (text-generation) and masked LMs (fill-mask) are supported for language auditing.",
+                f"**Model:** {lm_model_name}",
+            )
+
+        # Attempt to load — auto-detect causal vs masked
+        _tokenizer = None
+        _model = None
+        lm_model_name = model_id
+
+        from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForMaskedLM
+
+        print(f"Loading language model: {model_id} …")
+        _tokenizer = AutoTokenizer.from_pretrained(model_id)
+        if _tokenizer.pad_token is None:
+            _tokenizer.pad_token = _tokenizer.eos_token
+
+        is_masked = pipeline_tag == "fill-mask" or model_type in _MASKED_LM_TYPES
+        if is_masked:
+            _model = AutoModelForMaskedLM.from_pretrained(model_id)
+        else:
+            _model = AutoModelForCausalLM.from_pretrained(model_id)
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        _model = _model.to(device)
+        _model.eval()
+
+        arch_label = "Masked LM" if is_masked else "Causal LM"
+        status_msg = f"✅ **Loaded:** `{model_id}` *({arch_label})*"
+        model_display = f"**Model:** {model_id}"
+        return status_msg, model_display
+
+    except Exception as e:
+        return (
+            f"❌ **Error loading `{model_id}`:** {str(e)}",
+            f"**Model:** {lm_model_name}",
+        )
+
+
+def run_general_lm(prompt_text: str, token_index: int, temperature: float):
+    """
+    Run the currently loaded language model in general mode.
+    - For causal LMs: generates a continuation; the user can pick any input token
+      to explain via `token_index`.
+    - For masked LMs: fills the [MASK] in the prompt.
+
+    Returns:
+        (html_output, continuation, full_text, model_display, tokens_list)
+    """
+    global _model, _tokenizer, lm_model_name
+
+    if not prompt_text or not prompt_text.strip():
+        return (
+            "<p>Enter some text in the prompt box to get started.</p>",
+            "", "", f"**Model:** {lm_model_name}", [],
+        )
+
+    if _model is None or _tokenizer is None:
+        initialize_model(lm_model_name)
+
+    from transformers import AutoModelForMaskedLM
+    is_masked = isinstance(_model, AutoModelForMaskedLM)
+
+    try:
+        if is_masked:
+            # Fill-mask mode
+            inputs = _tokenizer(prompt_text, return_tensors="pt").to(_model.device)
+            with torch.no_grad():
+                outputs = _model(**inputs)
+            logits = outputs.logits
+            # predict for each [MASK] position
+            mask_token_id = _tokenizer.mask_token_id
+            input_ids = inputs["input_ids"][0]
+            tokens = _tokenizer.convert_ids_to_tokens(input_ids)
+            mask_positions = (input_ids == mask_token_id).nonzero(as_tuple=True)[0].tolist()
+            if mask_positions:
+                pos = mask_positions[0]
+                top_id = logits[0, pos].argmax().item()
+                continuation = _tokenizer.decode([top_id])
+                full_text = prompt_text.replace(_tokenizer.mask_token, continuation, 1)
+            else:
+                continuation = "(no [MASK] token found)"
+                full_text = prompt_text
+        else:
+            # Causal-LM generation
+            continuation, full_text = _generate_continuation(
+                prompt_text, _model, _tokenizer,
+                max_new_tokens=20,
+                temperature=temperature,
+            )
+            # Get tokens of the continuation for output-token explanation
+            cont_ids = _tokenizer(continuation, return_tensors="pt", add_special_tokens=False)["input_ids"][0]
+            tokens = _tokenizer.convert_ids_to_tokens(cont_ids)
+
+        # Build token list for the UI slider
+        token_list = list(tokens) if tokens else []
+
+        html_output = f"""
+        <div style="padding: 20px; background-color: #f0f0f0; border-radius: 5px;">
+            <h3>Model Output:</h3>
+            <p style="font-size: 16px; color: #111;">{continuation}</p>
+        </div>
+        """
+        model_display = f"**Model:** {lm_model_name}"
+        return html_output, continuation, full_text, model_display, token_list
+
+    except Exception as e:
+        return (
+            f"<p style='color:red;'>Error: {e}</p>",
+            "", "", f"**Model:** {lm_model_name}", [],
+        )
+
+
+def explain_feature_attribution(
+    model, tokenizer, input_text, target_text,
+    attribution_method="integrated_gradients",
+    ranks=None,
+    explain_token_index=0
+):
+    """
+    Explain a specific token in the generation.
+    input_text: the original prompt
+    target_text: prompt + continuation
+    explain_token_index: index of the token in the continuation to explain
+    """
+    # 1. Get the continuation
+    if target_text.startswith(input_text):
+        continuation = target_text[len(input_text):]
+    else:
+        # If input_text was truncated or changed, we try to find common boundary
+        continuation = target_text
+    
+    # 2. Tokenize continuation to find the target_token_id at explain_token_index
+    cont_inputs = tokenizer(continuation, return_tensors="pt", add_special_tokens=False)
+    cont_ids = cont_inputs["input_ids"][0].tolist()
+    
+    if not cont_ids:
+        # Fallback if no tokens in continuation
+        return "<p>No tokens generated to explain.</p>"
+    
+    # Ensure index is within range
+    idx = max(0, min(explain_token_index, len(cont_ids) - 1))
+    target_token_id = cont_ids[idx]
+    
+    # 3. Construct extended input: prompt + continuation tokens before the target
+    ids_before = cont_ids[:idx]
+    extended_input = input_text + tokenizer.decode(ids_before, skip_special_tokens=True)
+    
+    # 4. Get explanation for the target_token_id at the end of extended_input
+    explanation = get_explanation(
+        extended_input,
+        model, 
+        tokenizer,
+        method=attribution_method,
+        target_token_id=target_token_id
+    )
+    
+    # 5. Convert to highlights
+    # convert_explanation_to_highlights returns list of (start, end, label, color)
+    highlights = convert_explanation_to_highlights(explanation, extended_input)
+    
+    # 6. Render HTML using highlight_text
+    target_str = tokenizer.decode([target_token_id])
+    return highlight_text(
+        extended_input, 
+        highlights, 
+        [target_str], 
+        title=f"Attribution analysis for token: '{target_str.strip()}'"
+    )

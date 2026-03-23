@@ -20,9 +20,10 @@ def export_settings(settings_dict):
         else:
             export_data[k] = str(v)
             
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode='w', encoding='utf-8') as f:
+    temp_dir = tempfile.mkdtemp()
+    path = os.path.join(temp_dir, filename)
+    with open(path, 'w', encoding='utf-8') as f:
         json.dump(export_data, f, indent=4)
-        path = f.name
     return path
 
 def import_settings(file_path):

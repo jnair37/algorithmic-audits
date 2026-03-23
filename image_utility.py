@@ -1215,9 +1215,11 @@ def export_all_html():
         html += "<hr>"
     html += "</body></html>"
     
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
+    temp_dir = tempfile.mkdtemp()
+    path = os.path.join(temp_dir, "all_image_sessions.html")
+    with open(path, 'w', encoding='utf-8') as f:
         f.write(html)
-        return f.name
+    return path
 
 def export_selected_html(label):
     global _image_versions
@@ -1249,15 +1251,21 @@ def export_selected_html(label):
         
     html += "</body></html>"
     
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
+    temp_dir = tempfile.mkdtemp()
+    # Sanitize label for filename
+    safe_label = "".join([c if c.isalnum() else "_" for c in label])
+    path = os.path.join(temp_dir, f"image_session_{safe_label}.html")
+    with open(path, 'w', encoding='utf-8') as f:
         f.write(html)
-        return f.name
+    return path
 
 def export_batch_csv(results_g1, results_g2):
     if not results_g1 and not results_g2:
         return None
         
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode='w', encoding='utf-8', newline='') as f:
+    temp_dir = tempfile.mkdtemp()
+    path = os.path.join(temp_dir, "image_batch_results.csv")
+    with open(path, 'w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['Group', 'Caption', 'Tokens'])
         
@@ -1267,7 +1275,7 @@ def export_batch_csv(results_g1, results_g2):
         for res in (results_g2 or []):
             writer.writerow(['Group 2', res.get('caption', ''), ", ".join(res.get('tokens', []))])
             
-        return f.name
+    return path
 
 # -------------------------
 # EXPORT FUNCTIONS

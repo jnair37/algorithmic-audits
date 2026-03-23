@@ -2155,14 +2155,14 @@ def explain_batch_variation(batch_results, current_index, method, rank_order=Non
             input_text, _model, _tokenizer, continuation, full_text, rank_order, progress=progress
         )
         highlights = convert_explanation_to_highlights(explanation, extended_input)
-        return highlight_text(input_text, highlights, target_token, title=f"Explanation for: {result['variation']}")
+        return highlight_text(extended_input, highlights, target_token, title=f"Explanation for: {result['variation']}")
     else:
         highlights, outputs, target_token, _ = analyze_generation(
             input_text, _model, _tokenizer, 
             continuation, full_text, 
             method=method
         )
-        return highlight_text(extended_input, highlights, target_token, title=f"Explanation for: {result['variation']}")
+        return highlight_text(input_text, highlights, target_token, title=f"Explanation for: {result['variation']}")
 
 # TODO: in the interp version, have the user select a target token from the above output, which triggers explain_resume
 def calculate_roc_weights(rank_order):
@@ -2625,9 +2625,10 @@ def export_all_html():
         html += "<hr>"
     html += "</body></html>"
     
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
+    temp_dir = tempfile.mkdtemp()
+    path = os.path.join(temp_dir, "all_resume_trials.html")
+    with open(path, 'w', encoding='utf-8') as f:
         f.write(html)
-        path = f.name
     return path
 
 def export_selected_html(selected):
@@ -2636,21 +2637,25 @@ def export_selected_html(selected):
         return None
     
     html = f"<html><body><h1>{selected}</h1><hr>{_saved_versions[selected]['html']}</body></html>"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
+    temp_dir = tempfile.mkdtemp()
+    # Sanitize label for filename
+    safe_label = "".join([c if c.isalnum() else "_" for c in selected])
+    path = os.path.join(temp_dir, f"resume_trial_{safe_label}.html")
+    with open(path, 'w', encoding='utf-8') as f:
         f.write(html)
-        path = f.name
     return path
 
 def export_batch_csv(batch_results):
     if not batch_results:
         return None
     
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode='w', encoding='utf-8', newline='') as f:
+    temp_dir = tempfile.mkdtemp()
+    path = os.path.join(temp_dir, "resume_batch_results.csv")
+    with open(path, 'w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['Variation', 'Category', 'Sentiment', 'Avg Score', 'Continuation'])
         for res in batch_results:
             writer.writerow([res['variation'], res['category'], res['sentiment'], res['avg_score'], res['continuation']])
-        path = f.name
     return path
 
 

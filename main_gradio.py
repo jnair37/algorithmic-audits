@@ -256,6 +256,19 @@ custom_css = """
 .dark-text-container * {
     color: #2c3e50 !important;
 }
+.revert-btn-styled {
+    background-color: #2c3e50 !important;
+    color: #ffffff !important;
+    border: 1px solid #444 !important;
+}
+.revert-btn-styled:hover {
+    background-color: #3e5871 !important;
+}
+.revert-btn-styled:disabled {
+    background-color: #bdc3c7 !important;
+    color: #7f8c8d !important;
+    cursor: not-allowed;
+}
 """
 
 CALIBRATION_WIDGET_HTML = """
@@ -347,6 +360,24 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                 # ── Inner step tabs ──────────────────────────────────────────────
                 with gr.Tabs(selected=0) as screener_steps:
     
+                    # ── Step 0: Start Here ──────────────────────────────
+                    with gr.Tab("Step 0: Start Here", id=-1):
+                        gr.Markdown("### Welcome to the Algorithmic Audit Toolkit")
+                        gr.Markdown("You can start a new audit session or import a previously saved configuration.")
+                        
+                        with gr.Group():
+                            gr.Markdown("#### Import or Create New")
+                            with gr.Row():
+                                resume_settings_import_btn = gr.File(label="📂 Import Settings File (.json)", file_count="single", file_types=[".json"])
+                            
+                            gr.Markdown("<br>")
+                            with gr.Row():
+                                start_new_audit_btn = gr.Button("Start New Language Audit", variant="primary")
+                        
+                        gr.Markdown("---")
+                        gr.Markdown("Proceed to **Step 1** once you have loaded your configuration or are ready to set up a new audit.")
+                        start_new_audit_btn.click(fn=lambda: gr.update(selected=0), outputs=screener_steps)
+
                     # ── Step 1: Input & Configuration ───────────────────────────
                     with gr.Tab("Step 1: Input & Configuration", id=0):
                         gr.Markdown("Configure the model and choose your use case. Paste a HuggingFace model URL or ID to load any compatible causal or masked language model.")
@@ -366,12 +397,13 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                             "*Supports any causal LM (text-generation) or masked LM (fill-mask) from HuggingFace.*",
                         )
 
-                        temperature_slider = gr.Number(
-                            label="Model Temperature",
-                            value=0.45,
-                            precision=2,
-                            info="Controls randomness. Lower values are more deterministic; higher values (up to 1) increase variability.",
-                        )
+                        with gr.Accordion("Configure Hyperparameters", open=False):
+                            temperature_slider = gr.Number(
+                                label="Model Temperature",
+                                value=0.45,
+                                precision=2,
+                                info="Controls randomness. Lower values are more deterministic; higher values (up to 1) increase variability.",
+                            )
 
                         gr.Markdown("---")
 
@@ -380,7 +412,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                         resume_usecase_radio = gr.Radio(
                             choices=["General (Causal / Masked LM)", "Resume Screening"],
                             value="General (Causal / Masked LM)",
-                            label="Auditing Mode",
+                            label="",
                             info="Choose the analysis context. Resume Screening uses a structured hiring prompt; General lets you run any prompt.",
                         )
 
@@ -409,7 +441,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                                 placeholder="Leading instructions or context...",
                             )
                             with gr.Row():
-                                revert_lead_btn = gr.Button("Revert Lead", variant="secondary", size="sm")
+                                revert_lead_btn = gr.Button("revert to original", variant="secondary", size="sm", interactive=False, elem_classes=["revert-btn-styled"])
 
                             # Main Body Section
                             gr.Markdown("#### Main Resume Body")
@@ -420,7 +452,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                                 placeholder="Paste the main resume content here...",
                             )
                             with gr.Row():
-                                revert_body_btn = gr.Button("Revert Body", variant="secondary", size="sm")
+                                revert_body_btn = gr.Button("revert to original", variant="secondary", size="sm", interactive=False, elem_classes=["revert-btn-styled"])
 
                             # End Prompt Section
                             gr.Markdown("#### End Prompt")
@@ -432,7 +464,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                                 placeholder="Closing instructions...",
                             )
                             with gr.Row():
-                                revert_end_btn = gr.Button("Revert End", variant="secondary", size="sm")
+                                revert_end_btn = gr.Button("revert to original", variant="secondary", size="sm", interactive=False, elem_classes=["revert-btn-styled"])
 
                         gr.Markdown("---")
                         gr.Markdown("### Enable Batch Analysis")
@@ -483,11 +515,11 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                             interactive=True
                         )
                         
-                        gr.Markdown("---")
-                        gr.Markdown("### 4. Configuration Persistence")
+                        # ── 4. Save These Settings ────────────────────────────────
+                        gr.Markdown("### 4. Save These Settings")
                         with gr.Row():
                             resume_settings_export_btn = gr.DownloadButton("💾 Export Audit Settings", variant="secondary")
-                            resume_settings_import_btn = gr.File(label="📂 Import Settings", file_count="single", file_types=[".json"])
+                            # resume_settings_import_btn moved to Step 0
     
                         gr.Markdown("---")
                         with gr.Row():
@@ -674,7 +706,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                         # Listen for changes in rank state to show "Ranking saved"
                         explanation_rank_state.change(fn=lambda: gr.update(visible=True), outputs=ranking_saved_msg)
 
-                        resume_method_dropdown = gr.State(value="integrated_gradients")
+                        resume_method_dropdown = gr.State(value="calibrated")
                         resume_explain_btn = gr.Button("Explain", variant='primary', interactive=has_explanation, visible=False)
                         with gr.Column():
                             explanation_html = gr.HTML(
@@ -739,14 +771,11 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                                     label="Select version A",
                                     interactive=True
                                 )
-                                with gr.Row():
-                                    resume_clear_btn_a = gr.Button("Clear A", variant="secondary", size="sm")
-                                    resume_download_selected_btn_a = gr.DownloadButton("Download A (HTML)", variant="primary", visible=False, size="sm")
-                                
                                 resume_comparison_output_a = gr.HTML(
                                     label="Saved Highlights A",
                                     value="<p>Select a version to compare.</p>"
                                 )
+                                resume_download_selected_btn_a = gr.DownloadButton("Download A (HTML)", variant="primary", visible=False, size="sm")
 
                             with gr.Column():
                                 gr.Markdown("#### Comparison Column B")
@@ -755,19 +784,17 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                                     label="Select version B",
                                     interactive=True
                                 )
-                                with gr.Row():
-                                    resume_clear_btn_b = gr.Button("Clear B", variant="secondary", size="sm")
-                                    resume_download_selected_btn_b = gr.DownloadButton("Download B (HTML)", variant="primary", visible=False, size="sm")
-                                
                                 resume_comparison_output_b = gr.HTML(
                                     label="Saved Highlights B",
                                     value="<p>Select a version to compare.</p>"
                                 )
+                                resume_download_selected_btn_b = gr.DownloadButton("Download B (HTML)", variant="primary", visible=False, size="sm")
 
                         gr.Markdown("---")
                         with gr.Row():
                             resume_download_all_btn = gr.DownloadButton("Download All Trials (HTML)", variant="secondary")
                             resume_download_csv_btn = gr.DownloadButton("Download Batch Results (CSV)", variant="secondary", visible=False)
+                            resume_settings_export_btn_stage3 = gr.DownloadButton("💾 Save These Settings", variant="secondary")
     
                         gr.Markdown("---")
                         with gr.Row():
@@ -951,6 +978,11 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                 revert_lead_btn.click(fn=revert_lead_prompt, inputs=None, outputs=resume_lead_input)
                 revert_body_btn.click(fn=revert_main_body, inputs=None, outputs=resume_body_input)
                 revert_end_btn.click(fn=revert_end_prompt, inputs=None, outputs=resume_end_input)
+
+                # Enable revert buttons on change
+                resume_lead_input.change(fn=lambda: gr.update(interactive=True), outputs=revert_lead_btn)
+                resume_body_input.change(fn=lambda: gr.update(interactive=True), outputs=revert_body_btn)
+                resume_end_input.change(fn=lambda: gr.update(interactive=True), outputs=revert_end_btn)
     
                 def revert_all():
                     lead, body, end = split_resume_corpus(sample_corpus)
@@ -991,6 +1023,16 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                         batch_preset_selection, batch_num_variations, batch_token_input, batch_nl_input, batch_code_preview
                     ],
                     outputs=resume_settings_export_btn
+                )
+
+                resume_settings_export_btn_stage3.click(
+                    fn=handle_resume_settings_export,
+                    inputs=[
+                        resume_model_input, temperature_slider, resume_usecase_radio, general_prompt_input,
+                        resume_lead_input, resume_body_input, resume_end_input, batch_analysis_toggle,
+                        batch_preset_selection, batch_num_variations, batch_token_input, batch_nl_input, batch_code_preview
+                    ],
+                    outputs=resume_settings_export_btn_stage3
                 )
 
                 resume_settings_import_btn.upload(
@@ -1224,17 +1266,17 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                     outputs=[resume_comparison_output_b, resume_download_selected_btn_b, resume_download_csv_btn]
                 )
     
-                resume_clear_btn_a.click(
-                    fn=clear_resume_comparison,
-                    inputs=None,
-                    outputs=[resume_comparison_output_a, resume_version_dropdown_a]
-                )
+                # resume_clear_btn_a.click(
+                #     fn=clear_resume_comparison,
+                #     inputs=None,
+                #     outputs=[resume_comparison_output_a, resume_version_dropdown_a]
+                # )
 
-                resume_clear_btn_b.click(
-                    fn=clear_resume_comparison,
-                    inputs=None,
-                    outputs=[resume_comparison_output_b, resume_version_dropdown_b]
-                )
+                # resume_clear_btn_b.click(
+                #     fn=clear_resume_comparison,
+                #     inputs=None,
+                #     outputs=[resume_comparison_output_b, resume_version_dropdown_b]
+                # )
     
 
     
@@ -1324,19 +1366,6 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                                         img_batch_prompt_g2 = gr.Textbox(label="Group 2: Image Prompt", lines=2)
                                         img_batch_gen_count = gr.Slider(minimum=1, maximum=5, value=2, step=1, label="Images per group (max 5)")
     
-                                with gr.Accordion("1. Configure Model", open=True):
-                                    # Model selection
-                                    with gr.Row():
-                                        image_model_input = gr.Textbox(
-                                            label="HuggingFace Model ID or URL",
-                                            placeholder="e.g. Salesforce/blip-image-captioning-base",
-                                            scale=5,
-                                            interactive=True,
-                                        )
-                                        image_load_btn = gr.Button("Load Model", variant="primary", scale=1)
-                                    image_model_status = gr.Markdown("", elem_id="image_model_status")
-                                    gr.Markdown("*Supports image-to-text / vision-language models from HuggingFace.*")
-                                        
                                     image_current_model_display = gr.Markdown("**Model:** microsoft/git-large-coco")
                                         
                                     gr.Markdown("#### Analysis Settings")

@@ -2162,7 +2162,7 @@ def explain_batch_variation(batch_results, current_index, method, rank_order=Non
             continuation, full_text, 
             method=method
         )
-        return highlight_text(input_text, highlights, target_token, title=f"Explanation for: {result['variation']}")
+        return highlight_text(extended_input, highlights, target_token, title=f"Explanation for: {result['variation']}")
 
 # TODO: in the interp version, have the user select a target token from the above output, which triggers explain_resume
 def calculate_roc_weights(rank_order):
@@ -2569,10 +2569,13 @@ def save_resume_version(text, html_content, auto_label=None):
     if auto_label:
         version_name = auto_label
     else:
-        words = str(text).split()
-        short_desc = " ".join(words[:5]) + "..." if len(words) > 5 else str(text)
-        short_desc = short_desc.replace('\n', ' ')
-        version_name = f"{lm_model_name} | {short_desc} | {timestamp}"
+        # Better, more descriptive naming: Extract keywords or a cleaner summary
+        words = [w for w in str(text).split() if len(w) > 3]
+        short_desc = " ".join(words[:4]) + "..." if len(words) > 4 else str(text)
+        short_desc = short_desc.replace('\n', ' ').strip()
+        # Include a snippet of the model name and the first few keywords
+        model_snippet = lm_model_name.split('/')[-1] if '/' in lm_model_name else lm_model_name
+        version_name = f"📝 {model_snippet} | {short_desc} | {timestamp}"
 
     # Wrap the input text in a stylized box
     text_wrap = f"""

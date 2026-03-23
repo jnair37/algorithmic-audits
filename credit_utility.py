@@ -53,7 +53,7 @@ CREDIT_MODELS = {
 # Set style for visualizations
 sns.set_style("whitegrid")
 
-# Feature names from the model
+# Features from the model (can be updated dynamically)
 FEATURE_NAMES = [
     'person_age', 'person_income', 'person_emp_length', 'loan_amnt',
     'loan_int_rate', 'loan_percent_income', 'cb_person_cred_hist_length',
@@ -72,6 +72,7 @@ FEATURE_NAMES = [
 _model = None
 _scaler = None
 _explainer = None
+_feature_mapping = {} # Store mapping of original names to clean names
 
 def _initialize_model():
     """Initialize or load the credit risk model"""
@@ -97,6 +98,14 @@ def _initialize_model():
             except:
                 with open(model_path, "rb") as f:
                     _model = pickle.load(f)
+            
+            # ATTEMPT DYNAMIC FEATURE DETECTION
+            global FEATURE_NAMES
+            if hasattr(_model, "feature_names_in_"):
+                FEATURE_NAMES = list(_model.feature_names_in_)
+            elif hasattr(_model, "feature_names"):
+                FEATURE_NAMES = list(_model.feature_names)
+            # Else keep defaults for the credit model if it's the default repo
             
             print(f"Model loaded from HuggingFace: {_current_model_name}")
             
@@ -197,6 +206,17 @@ def validate_and_load_credit_model(hf_model_id: str):
         _model = new_model
         _current_model_name = model_id
         
+        # ATTEMPT DYNAMIC FEATURE DETECTION
+        global FEATURE_NAMES
+        if hasattr(_model, "feature_names_in_"):
+            FEATURE_NAMES = list(_model.feature_names_in_)
+        elif hasattr(_model, "feature_names"):
+            FEATURE_NAMES = list(_model.feature_names)
+        elif hasattr(_model, "get_booster"): # XGBoost specific
+            try:
+                FEATURE_NAMES = _model.get_booster().feature_names
+            except: pass
+            
         # We assume it's a tree model for default SHAP
         try:
             _explainer = shap.TreeExplainer(_model)
@@ -204,7 +224,7 @@ def validate_and_load_credit_model(hf_model_id: str):
             print("Could not initialize TreeExplainer, model might not be tree based.")
             _explainer = None
             
-        return f"✅ **Loaded:** `{model_id}/{filename}`", f"**Model:** {model_id}"
+        return f"✅ **Loaded:** `{model_id}/{filename}` | **Features:** {len(FEATURE_NAMES)} found.", f"**Model:** {model_id}"
 
     except Exception as e:
         return f"❌ **Error validating `{model_id}`:** {str(e)}", f"**Model:** {_current_model_name}"
@@ -357,9 +377,17 @@ def sample_credit_data():
 
 
 def _map_inputs_to_features(age, income, credit_score, debt_ratio, 
-                           employment_years, loan_amount, num_accounts, delinquencies):
-    """Map Gradio inputs to model features"""
+                           employment_years, loan_amount, num_accounts, delinquencies,
+                           feature_names=None):
+    """Map Gradio inputs to model features, handles both standard credit and general models"""
     
+    # If feature_names is likely the default credit features (29 features), use standard mapping
+    if feature_names is not None and len(feature_names) != 29:
+        return _map_general_inputs(age, income, credit_score, debt_ratio,
+                                  employment_years, loan_amount, num_accounts, delinquencies,
+                                  feature_names)
+
+    # Standard Credit Mapping (legacy)
     # Calculate derived features
     loan_percent_income = loan_amount / income
     income_to_age_ratio = income / age
@@ -428,23 +456,64 @@ def _map_inputs_to_features(age, income, credit_score, debt_ratio,
     
     return features
 
+def _map_general_inputs(age, income, credit_score, debt_ratio,
+                        employment_years, loan_amount, num_accounts, delinquencies,
+                        feature_names):
+    """Attempt to map the 8 standard UI sliders to arbitrary feature names"""
+    # Simple mapping dictionary for fuzzy matching
+    mapping = {
+        'age': age, 'income': income, 'score': credit_score, 'debt': debt_ratio,
+        'employment': employment_years, 'loan': loan_amount, 'account': num_accounts,
+        'delinquency': delinquencies, 'default': delinquencies
+    }
+    
+    feature_vector = []
+    for f in feature_names:
+        val = 0.0 # Default fallback
+        f_lower = f.lower()
+        # Try to find a match in the mapping
+        found = False
+        for key, value in mapping.items():
+            if key in f_lower:
+                val = float(value)
+                found = True
+                break
+        feature_vector.append(val)
+        
+    return np.array(feature_vector).reshape(1, -1)
+
 
 def predict_credit_risk(age, income, credit_score, debt_ratio, 
                        employment_years, loan_amount, num_accounts, 
-                       delinquencies, method):
+                       delinquencies, method, feature_overrides=None):
     """
-    Predict credit risk and return HTML output with feature importance plot
-    
+    Predict risk for any supervised model.
+    Accepts standard 8 inputs + optional feature_overrides dict.
     """
     _initialize_model()
     
-    print("initialized?")
-
-    # Map inputs to features
-    X = _map_inputs_to_features(age, income, credit_score, debt_ratio,
-                                employment_years, loan_amount, num_accounts, delinquencies)
+    global FEATURE_NAMES
     
-    # Scale if using synthetic model
+    # Map inputs to features
+    if len(FEATURE_NAMES) == 29 and "person_age" in FEATURE_NAMES:
+        X = _map_inputs_to_features(age, income, credit_score, debt_ratio,
+                                    employment_years, loan_amount, num_accounts, delinquencies,
+                                    feature_names=FEATURE_NAMES)
+    else:
+        # General mapping for arbitrary models
+        X = _map_general_inputs(age, income, credit_score, debt_ratio,
+                                 employment_years, loan_amount, num_accounts, delinquencies,
+                                 FEATURE_NAMES)
+    
+    # Apply overrides if provided (useful for "compatible with any supervised modeling")
+    if feature_overrides:
+        for i, f in enumerate(FEATURE_NAMES):
+            if f in feature_overrides:
+                try:
+                    X[0, i] = float(feature_overrides[f])
+                except: pass
+
+    # Scale if using synthetic model (identified by _scaler being present)
     if _scaler is not None:
         X_scaled = _scaler.transform(X)
     else:
@@ -762,7 +831,9 @@ def save_credit_version(age, income, credit_score, debt_ratio,
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not version_name:
-        version_name = f"Credit: {timestamp}"
+        # Better, more descriptive naming
+        model_snippet = _current_model_name.split('/')[-1] if '/' in _current_model_name else _current_model_name
+        version_name = f"📊 {model_snippet} | Score: {credit_score}, Income: ${income:,} | {timestamp}"
         
     data = {
         'timestamp': timestamp,

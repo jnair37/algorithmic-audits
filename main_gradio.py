@@ -7,6 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 import gradio as gr
+import json
 
 # Helper functions for version changes and exports
 def on_resume_version_change(selected, batch_enabled, batch_results):
@@ -64,6 +65,7 @@ from credit_utility import (
     export_all_credit_html,
     switch_credit_model,
 )
+from settings_manager import export_settings, import_settings
 
 global has_explanation
 has_explanation = True
@@ -480,6 +482,12 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                             visible=False,
                             interactive=True
                         )
+                        
+                        gr.Markdown("---")
+                        gr.Markdown("### 4. Configuration Persistence")
+                        with gr.Row():
+                            resume_settings_export_btn = gr.DownloadButton("💾 Export Audit Settings", variant="secondary")
+                            resume_settings_import_btn = gr.File(label="📂 Import Settings", file_count="single", file_types=[".json"])
     
                         gr.Markdown("---")
                         with gr.Row():
@@ -952,6 +960,47 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                     fn=revert_all,
                     inputs=None,
                     outputs=[resume_lead_input, resume_body_input, resume_end_input]
+                )
+
+                def handle_resume_settings_export(model, temp, usecase, prompt, lead, body, end, batch_on, batch_preset, batch_num, batch_token, batch_nl, batch_code):
+                    settings = {
+                        "model": model, "temp": temp, "usecase": usecase, "prompt": prompt,
+                        "lead": lead, "body": body, "end": end, "batch_enabled": batch_on,
+                        "batch_preset": batch_preset, "batch_num": batch_num, "batch_token": batch_token,
+                        "batch_nl": batch_nl, "batch_code": batch_code
+                    }
+                    return export_settings(settings)
+
+                def handle_resume_settings_import(file_info):
+                    if not file_info: return [gr.update()]*13
+                    from settings_manager import import_settings
+                    data = import_settings(file_info.name)
+                    if not data: return [gr.update()]*13
+                    return (
+                        data.get("model", ""), data.get("temp", 0.45), data.get("usecase", "General (Causal / Masked LM)"),
+                        data.get("prompt", ""), data.get("lead", ""), data.get("body", ""), data.get("end", ""),
+                        data.get("batch_enabled", False), data.get("batch_preset", "Preset: Gender"),
+                        data.get("batch_num", 20), data.get("batch_token", ""), data.get("batch_nl", ""), data.get("batch_code", "")
+                    )
+
+                resume_settings_export_btn.click(
+                    fn=handle_resume_settings_export,
+                    inputs=[
+                        resume_model_input, temperature_slider, resume_usecase_radio, general_prompt_input,
+                        resume_lead_input, resume_body_input, resume_end_input, batch_analysis_toggle,
+                        batch_preset_selection, batch_num_variations, batch_token_input, batch_nl_input, batch_code_preview
+                    ],
+                    outputs=resume_settings_export_btn
+                )
+
+                resume_settings_import_btn.upload(
+                    fn=handle_resume_settings_import,
+                    inputs=resume_settings_import_btn,
+                    outputs=[
+                        resume_model_input, temperature_slider, resume_usecase_radio, general_prompt_input,
+                        resume_lead_input, resume_body_input, resume_end_input, batch_analysis_toggle,
+                        batch_preset_selection, batch_num_variations, batch_token_input, batch_nl_input, batch_code_preview
+                    ]
                 )
 
                 # ── General LM Handlers ──────────────────────────────────────────
@@ -1802,9 +1851,15 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                                     credit_num_accounts = gr.Slider(minimum=0, maximum=20, value=3, step=1, label="Number of Credit Accounts")
                                     credit_delinquencies = gr.Slider(minimum=0, maximum=10, value=0, step=1, label="Past Delinquencies")
                                     
+                                    with gr.Accordion("🔧 Advanced: Manual Feature Overrides (JSON)", open=False):
+                                        gr.Markdown("Directly override any model feature. Example: `{\"person_income\": 150000, \"age\": 40}`")
+                                        credit_feature_overrides = gr.Textbox(placeholder="{}", label="Overrides (JSON)", lines=2)
+                                    
                                     with gr.Row():
                                         credit_predict_btn = gr.Button("Predict Risk", variant="primary")
                                         credit_reset_btn = gr.Button("Reset to Default", variant="secondary")
+                                        credit_settings_export_btn = gr.DownloadButton("💾 Export Settings", variant="secondary")
+                                        credit_settings_import_btn = gr.File(label="📂 Import Settings", file_count="single", file_types=[".json"])
                                     
                                     credit_method_dropdown = gr.Dropdown(
                                         choices=["shap", "lime", "integrated_gradients"],
@@ -1876,14 +1931,23 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
     
                 # Event Handlers for Credit Risk Tab
                 def handle_predict_and_save(age, income, credit_score, debt_ratio, employment_years, 
-                                          loan_amount, num_accounts, delinquencies, method):
-                    # 1. Predict
+                                          loan_amount, num_accounts, delinquencies, method, 
+                                          feature_overrides_str):
+                    # 1. Parse overrides
+                    overrides = {}
+                    if feature_overrides_str and feature_overrides_str.strip():
+                        try:
+                            overrides = json.loads(feature_overrides_str)
+                        except Exception as e:
+                            print(f"Error parsing feature overrides: {e}")
+                    
+                    # 2. Predict
                     html, fig, model_disp = predict_credit_risk(
                         age, income, credit_score, debt_ratio, employment_years, 
-                        loan_amount, num_accounts, delinquencies, method
+                        loan_amount, num_accounts, delinquencies, method, feature_overrides=overrides
                     )
                     
-                    # 2. Autosave
+                    # 3. Autosave
                     choices, msg = save_credit_version(
                         age, income, credit_score, debt_ratio, employment_years, 
                         loan_amount, num_accounts, delinquencies, html
@@ -1898,16 +1962,56 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                         gr.update(choices=choices),                # Update Dropdown B
                     )
 
+                def handle_credit_settings_export(age, income, score, debt, emp, loan, accounts, delinq, model_id, method, overrides):
+                    settings = {
+                        "age": age, "income": income, "credit_score": score, "debt_ratio": debt,
+                        "employment_years": emp, "loan_amount": loan, "num_accounts": accounts,
+                        "delinquencies": delinq, "model_id": model_id, "method": method, "overrides": overrides
+                    }
+                    return export_settings(settings)
+                
+                def handle_credit_settings_import(file_info):
+                    if not file_info: return [gr.update()]*11
+                    from settings_manager import import_settings
+                    data = import_settings(file_info.name)
+                    if not data: return [gr.update()]*11
+                    return (
+                        data.get("age", 35), data.get("income", 50000), data.get("credit_score", 650),
+                        data.get("debt_ratio", 30), data.get("employment_years", 5), data.get("loan_amount", 15000),
+                        data.get("num_accounts", 3), data.get("delinquencies", 0), data.get("model_id", ""),
+                        data.get("method", "shap"), data.get("overrides", "{}")
+                    )
+
                 credit_predict_btn.click(
                     fn=handle_predict_and_save,
                     inputs=[
                         credit_age, credit_income, credit_score, credit_debt_ratio,
                         credit_employment_years, credit_loan_amount, credit_num_accounts,
-                        credit_delinquencies, credit_method_dropdown
+                        credit_delinquencies, credit_method_dropdown, credit_feature_overrides
                     ],
                     outputs=[
                         credit_risk_output, credit_feature_plot, credit_current_model_display,
                         credit_step2_tab, credit_steps, credit_version_dropdown_a, credit_version_dropdown_b
+                    ]
+                )
+                
+                credit_settings_export_btn.click(
+                    fn=handle_credit_settings_export,
+                    inputs=[
+                        credit_age, credit_income, credit_score, credit_debt_ratio,
+                        credit_employment_years, credit_loan_amount, credit_num_accounts,
+                        credit_delinquencies, credit_model_input, credit_method_dropdown, credit_feature_overrides
+                    ],
+                    outputs=credit_settings_export_btn
+                )
+                
+                credit_settings_import_btn.upload(
+                    fn=handle_credit_settings_import,
+                    inputs=credit_settings_import_btn,
+                    outputs=[
+                        credit_age, credit_income, credit_score, credit_debt_ratio,
+                        credit_employment_years, credit_loan_amount, credit_num_accounts,
+                        credit_delinquencies, credit_model_input, credit_method_dropdown, credit_feature_overrides
                     ]
                 )
 

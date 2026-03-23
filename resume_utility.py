@@ -206,6 +206,9 @@ def _get_integrated_gradients_with_noise_tunnel(text, model, tokenizer, target_t
         internal_batch_size=1
     )
 
+    # Keep raw attributions before summing
+    raw_attributions = attributions.detach().clone()  # (1, seq, hidden)
+
     # Sum attributions across embedding dimension
     token_attributions = attributions.sum(dim=-1).squeeze(0)
     attr_scores = token_attributions.detach().cpu().numpy()
@@ -228,7 +231,7 @@ def _get_integrated_gradients_with_noise_tunnel(text, model, tokenizer, target_t
     if len(next_token_logits.shape) == 0:
         next_token_logits = next_token_logits.reshape(1)
 
-    return attr_scores, tokens, base_values, output_names, next_token_logits
+    return attr_scores, tokens, base_values, output_names, next_token_logits, raw_attributions
 
 def _get_integrated_gradients_causal(text, model, tokenizer, target_token_id=None,
                                      n_steps=50, position=-1):
@@ -824,10 +827,14 @@ def get_explanation(
     method = method.lower()
 
     # Route to appropriate method
+
+    # default no raw attribution
+    raw_attributions = None
+
     if method == "integrated_gradients" or method == "ig":
         n_steps = kwargs.get('n_steps', 50)
         print('calling noise tunnel')
-        attr_scores, tokens, base_values, output_names, logits = _get_integrated_gradients_with_noise_tunnel(
+        attr_scores, tokens, base_values, output_names, logits, raw_attributions = _get_integrated_gradients_with_noise_tunnel(
             text, model, tokenizer, target_token_id, n_steps, position
         )
 
@@ -892,6 +899,12 @@ def get_explanation(
         base_values=base_values.reshape(1, -1),
         output_names=output_names
     )
+    explanation.raw_attributions = raw_attributions  # ADD for ig
+
+    # Debug prints
+    print("TOKENS VS DATA:")
+    for i, (tok, dat) in enumerate(zip(tokens, explanation.data[0])):
+        print(f"  {i}: token='{tok}' data='{dat}'")
 
     return explanation
 
@@ -2277,8 +2290,16 @@ def get_calibrated_explanation(
     input_embeds   = model.get_input_embeddings()(inputs_enc['input_ids']).detach()  # (1, seq, hidden)
     attention_mask = inputs_enc['attention_mask']
 
+    # def _forward_from_embeds(embeds):
+    #     """Scalar logit of target token at last position, given embedding input."""
+    #     out = model(inputs_embeds=embeds, attention_mask=attention_mask)
+    #     return out.logits[0, -1, target_token_id].unsqueeze(0)
+
+    # UPDATED::!
     def _forward_from_embeds(embeds):
-        """Scalar logit of target token at last position, given embedding input."""
+        # Generate mask dynamically from actual input shape, not the captured one
+        attention_mask = torch.ones(embeds.shape[0], embeds.shape[1], 
+                                    dtype=torch.long, device=embeds.device)
         out = model(inputs_embeds=embeds, attention_mask=attention_mask)
         return out.logits[0, -1, target_token_id].unsqueeze(0)
 
@@ -2345,13 +2366,19 @@ def get_calibrated_explanation(
         # 2. Infidelity — Captum (Fidelity, minimise)
         # Bug 1 fix: use embedding inputs so shapes match (1, seq, hidden) for both
         try:
-            hidden_size = input_embeds.shape[-1]
-            attr_embeds = (
-                torch.tensor(attr_1d, dtype=torch.float32, device=model.device)
-                .unsqueeze(0).unsqueeze(-1)          # (1, seq, 1)
-                .expand(1, input_embeds.shape[1], hidden_size)  # (1, seq, hidden)
-                .clone()                             # make contiguous
-            )
+            if (m_name == "integrated_gradients" 
+                    and hasattr(explanation, 'raw_attributions') 
+                    and explanation.raw_attributions is not None):
+                # Use full (1, seq, hidden) tensor — preserves per-dimension IG info
+                attr_embeds = explanation.raw_attributions.to(model.device)
+            else:
+                hidden_size = input_embeds.shape[-1]
+                attr_embeds = (
+                    torch.tensor(attr_1d, dtype=torch.float32, device=model.device)
+                    .unsqueeze(0).unsqueeze(-1)
+                    .expand(1, input_embeds.shape[1], hidden_size)
+                    .clone()
+                )
             i_score = float(
                 infidelity(
                     _forward_from_embeds,
@@ -2477,7 +2504,6 @@ def convert_explanation_to_highlights(explanation, extended_input):
     else:
         normalized = (all_values - min_val) / (max_val - min_val)
 
-    # Choose colormap
     cmap = plt.cm.viridis
 
     current_pos = 0
@@ -2488,9 +2514,20 @@ def convert_explanation_to_highlights(explanation, extended_input):
         value = all_values[i]
         color = mcolors.to_hex(cmap(normalized[i]))
 
-        start = extended_input.find(word, current_pos)
+        # Clean BPE artifacts: Ġ = space prefix, Ċ = newline
+        clean_word = word.replace("Ġ", " ").replace("Ċ", "\n").strip()
+
+        if not clean_word:
+            continue
+
+        start = extended_input.find(clean_word, current_pos)
+        if start == -1:
+            # Try case-insensitive search as fallback
+            lower_text = extended_input.lower()
+            start = lower_text.find(clean_word.lower(), current_pos)
+
         if start != -1:
-            end = start + len(word)
+            end = start + len(clean_word)
             label = f"{value:.2f}"
             highlights.append((start, end, label, color))
             current_pos = end

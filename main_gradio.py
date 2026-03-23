@@ -2011,4 +2011,4 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
     nav_credit_btn.click(fn=lambda: navigate("credit"), outputs=nav_outputs)
 
 # Cell 6: Launch the interface
-demo.launch(debug=True, share=True)
+demo.launch(debug=True, share=True, show_error=True)

@@ -1900,10 +1900,11 @@ with gr.Blocks(title="ExplanAudit: Algorithmic Auditing Toolkit", css=custom_css
                         with gr.Row():
                             with gr.Column(scale=1):
                                 with gr.Accordion("1. Configure Model", open=True):
-                                    credit_model_input = gr.Textbox(
-                                        label="HuggingFace Model ID or URL",
-                                        placeholder="e.g. Alfazril/credit-risk-prediction",
+                                    credit_model_input = gr.Dropdown(
+                                        choices=["Alfazril/credit-risk-prediction"],
+                                        label="Credit Risk Model",
                                         value="Alfazril/credit-risk-prediction",
+                                        interactive=True
                                     )
                                     credit_load_btn = gr.Button("Load Model", variant="primary")
                                     credit_model_status = gr.Markdown("")
@@ -2137,14 +2138,14 @@ with gr.Blocks(title="ExplanAudit: Algorithmic Auditing Toolkit", css=custom_css
                     outputs=credit_scenario_plot
                 )
     
-                gr.Markdown("""
-                ### How to Use:
-                - Adjust the sliders to input applicant information
-                - Click "Predict Risk" to see the model's credit risk assessment
-                - View feature importance to understand which factors most influenced the decision
-                - Use "Scenario Analysis" to explore how changing specific features affects the prediction
-                - Export a detailed report for documentation and compliance purposes
-                """)
+                # gr.Markdown("""
+                # ### How to Use:
+                # - Adjust the sliders to input applicant information
+                # - Click "Predict Risk" to see the model's credit risk assessment
+                # - View feature importance to understand which factors most influenced the decision
+                # - Use "Scenario Analysis" to explore how changing specific features affects the prediction
+                # - Export a detailed report for documentation and compliance purposes
+                # """)
     
             # --- Global Export Handlers ---
             from resume_utility import export_all_html as res_export_all, export_selected_html as res_export_selected, export_batch_csv as res_export_csv

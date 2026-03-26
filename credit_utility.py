@@ -16,6 +16,7 @@ import pickle
 import io
 from datetime import datetime
 import tempfile
+import os
 
 # ADDED: Track current model
 _current_model_name = "Alfazril/credit-risk-prediction"
@@ -864,9 +865,11 @@ def export_selected_credit_html(selected):
         return None
     
     html = _saved_credit_versions[selected]['html']
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
+    temp_dir = tempfile.mkdtemp()
+    safe_label = "".join([c if c.isalnum() else "_" for c in selected])[:40]
+    path = os.path.join(temp_dir, f"credit_audit_{safe_label}.html")
+    with open(path, 'w', encoding='utf-8') as f:
         f.write(html)
-        path = f.name
     return path
 
 
@@ -883,8 +886,9 @@ def export_all_credit_html():
         html += "<hr>"
     html += "</body></html>"
     
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode='w', encoding='utf-8') as f:
+    temp_dir = tempfile.mkdtemp()
+    path = os.path.join(temp_dir, "all_credit_risk_audits.html")
+    with open(path, 'w', encoding='utf-8') as f:
         f.write(html)
-        path = f.name
     return path
 

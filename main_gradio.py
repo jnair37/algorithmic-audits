@@ -207,30 +207,30 @@ custom_css = """
     padding: 0;
 }
 .sortable-item {
-    background-color: #f1f1f1;
+    background-color: #f1f1f1 !important;
     border: 1px solid #ccc;
     padding: 10px;
     margin-bottom: 5px;
     cursor: move;
     border-radius: 4px;
-    color: #333;
+    color: #333 !important;
     font-weight: 500;
 }
 .sortable-item:hover {
-    background-color: #e1e1e1;
+    background-color: #e1e1e1 !important;
 }
 .sortable-item.dragging {
     opacity: 0.5;
 }
 .item-subtitle {
     font-size: 0.85em;
-    color: #444; /* Darker for better contrast */
+    color: #444 !important; /* Darker for better contrast */
     font-weight: normal;
     margin-top: 2px;
     line-height: 1.25;
 }
 .sortable-item strong {
-    color: #111; /* Very dark for main tags */
+    color: #111 !important; /* Very dark for main tags */
     display: block;
     margin-bottom: 2px;
 }
@@ -256,6 +256,22 @@ custom_css = """
 .dark-text-container * {
     color: #2c3e50 !important;
 }
+/* Calibration rank container: lock to light background + dark text */
+#calibration-rank-container {
+    background-color: #f9f9f9 !important;
+    color: #333 !important;
+}
+#calibration-rank-container .draggable {
+    background-color: #e0e0e0 !important;
+    color: #333 !important;
+    border: 1px solid #b0b0b0 !important;
+}
+#calibration-rank-container .draggable strong {
+    color: #111 !important;
+}
+#calibration-rank-container .item-subtitle {
+    color: #444 !important;
+}
 .revert-btn-styled {
     background-color: #2c3e50 !important;
     color: #ffffff !important;
@@ -270,6 +286,7 @@ custom_css = """
     cursor: not-allowed;
 }
 """
+
 
 CALIBRATION_WIDGET_HTML = """
 <div id="calibration-rank-container">
@@ -388,6 +405,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                             resume_model_input = gr.Textbox(
                                 label="HuggingFace Model ID or URL",
                                 placeholder="e.g. EleutherAI/gpt-neo-125M  or  https://huggingface.co/gpt2",
+                                value="EleutherAI/gpt-neo-125M",
                                 scale=5,
                                 interactive=True,
                             )
@@ -1317,6 +1335,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                                     image_model_input = gr.Textbox(
                                         label="HuggingFace Model ID or URL",
                                         placeholder="e.g. Salesforce/blip-image-captioning-base",
+                                        value="Salesforce/blip-image-captioning-base",
                                     )
                                     image_load_btn = gr.Button("Load Model", variant="primary")
                                     image_model_status = gr.Markdown("")
@@ -1865,6 +1884,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                                     credit_model_input = gr.Textbox(
                                         label="HuggingFace Model ID or URL",
                                         placeholder="e.g. Alfazril/credit-risk-prediction",
+                                        value="Alfazril/credit-risk-prediction",
                                     )
                                     credit_load_btn = gr.Button("Load Model", variant="primary")
                                     credit_model_status = gr.Markdown("")

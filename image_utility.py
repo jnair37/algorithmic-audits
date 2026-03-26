@@ -16,6 +16,7 @@ import io
 import traceback
 import tempfile
 import csv
+import os
 
 # Try to import LVLM-interpret for advanced features
 try:

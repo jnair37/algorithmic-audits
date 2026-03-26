@@ -1239,7 +1239,17 @@ def highlight_text(text, highlights, outputs, title=""):
     Create HTML with highlighted sections.
     This is shared across all tabs.
     """
-    legend = ""
+    def _contrast_color(hex_color):
+        """Return #ffffff or #000000 depending on which has better contrast with hex_color."""
+        try:
+            hex_color = hex_color.lstrip('#')
+            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+            # Relative luminance (per WCAG)
+            luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            return "#ffffff" if luminance < 128 else "#000000"
+        except Exception:
+            return "#000000"
+
     if not highlights:
         content = f'<div style="font-family: Arial, sans-serif; line-height: 1.8; padding: 20px; color: #000000;">{text}</div>'
     else:
@@ -1255,8 +1265,9 @@ def highlight_text(text, highlights, outputs, title=""):
                 unhighlighted_text = text[last_idx:start].replace("\n", "<br>")
                 result.append(f'<span style="color: #000000;">{unhighlighted_text}</span>')
 
-            # Add highlighted text with dark text for better visibility
-            highlighted_span = f'<mark style="background-color: {color}; color: #000000; padding: 2px 4px; border-radius: 3px;" title="{label}">{text[start:end]}</mark>'
+            # Pick readable text color based on background luminance
+            text_color = _contrast_color(color)
+            highlighted_span = f'<mark style="background-color: {color}; color: {text_color}; padding: 2px 4px; border-radius: 3px;" title="{label}">{text[start:end]}</mark>'
             result.append(highlighted_span)
             last_idx = end
 
@@ -1267,31 +1278,19 @@ def highlight_text(text, highlights, outputs, title=""):
 
         content = ''.join(result)
 
-        # Get unique labels for legend
-        unique_labels = {}
-        for _, _, label, color in sorted_highlights:
-            if label not in unique_labels:
-                unique_labels[label] = color
-
-        # legend = f"""
-        # <div style="margin-top: 20px; padding: 10px; background-color: #f5f5f5; border-radius: 5px;">
-        #     <strong>Legend:</strong><br>
-        #     {' '.join([f'<mark style="background-color:#000000; color:#ffffff; padding: 2px 8px; margin: 5px; border-radius: 3px;">{output}</mark>' for output in outputs])}
-        # </div>
-        # """
-
     # Add title if provided
     title_html = f'<h3 style="color: #555; margin-bottom: 10px;">{title}</h3>' if title else ''
 
     # Create HTML with styling
     html_content = f"""
     {title_html}
-    <div style="font-family: Arial, sans-serif; line-height: 1.8; padding: 20px; border: 1px solid #ddd; border-radius: 5px; background-color: white;">
+    <div style="font-family: Arial, sans-serif; line-height: 1.8; padding: 20px; border: 1px solid #ddd; border-radius: 5px; background-color: white; color: #000000;">
         {content}
     </div>
     """
 
     return html_content
+
 
 
 # Cell 3: Resume Screener Tab Functions

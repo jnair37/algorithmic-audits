@@ -5,7 +5,7 @@ Supports multiple dataset images, uploads, and LVLM-interpret integration
 """
 
 import torch
-from transformers import AutoProcessor, AutoModelForCausalLM, BlipProcessor, BlipForConditionalGeneration
+from transformers import AutoProcessor, AutoModelForImageTextToText, BlipProcessor, BlipForConditionalGeneration
 from datasets import load_dataset
 import numpy as np
 import matplotlib.pyplot as plt
@@ -65,6 +65,30 @@ vision_model = None
 sample_images = []
 test_img = None
 
+def _get_device():
+    """Get the appropriate device for model placement."""
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def _to_device(inputs, device):
+    """
+    Safely move tensors in a dictionary to the target device, 
+    preserving integer dtypes for indices and using float16/32 for embeddings.
+    """
+    # Keys that should always be processed as integers (indices/masks)
+    integer_keys = {"input_ids", "attention_mask", "token_type_ids", "mm_token_type_ids", "image_grid_thw", "video_grid_thw"}
+    
+    for k, v in inputs.items():
+        if isinstance(v, torch.Tensor):
+            if k in integer_keys or any(x in k for x in ["ids", "mask", "grid", "thw"]):
+                # Force to Long to avoid issues with processors that return floats for indices (like Qwen2-VL)
+                inputs[k] = v.to(device, dtype=torch.long)
+            elif torch.is_floating_point(v):
+                target_dtype = torch.float16 if device.type == "cuda" else torch.float32
+                inputs[k] = v.to(device, dtype=target_dtype)
+            else:
+                inputs[k] = v.to(device)
+    return inputs
+
 def initialize_model(model_name=None):
     """Initialize the vision model and processor"""
     global processor, vision_model, _current_model_name
@@ -78,7 +102,7 @@ def initialize_model(model_name=None):
         
         try:
             processor = AutoProcessor.from_pretrained(model_id)
-            vision_model = AutoModelForCausalLM.from_pretrained(
+            vision_model = AutoModelForImageTextToText.from_pretrained(
                 model_id,
                 device_map="auto",
                 torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
@@ -91,7 +115,7 @@ def initialize_model(model_name=None):
                 print("Falling back to default model...")
                 _current_model_name = "microsoft/git-large-coco"
                 processor = AutoProcessor.from_pretrained("microsoft/git-large-coco")
-                vision_model = AutoModelForCausalLM.from_pretrained(
+                vision_model = AutoModelForImageTextToText.from_pretrained(
                     "microsoft/git-large-coco",
                     device_map="auto",
                     torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
@@ -181,6 +205,16 @@ def validate_and_load_image_model(hf_model_id: str):
                 f"**Model:** {_current_model_name}",
             )
 
+        if "qwen" in model_id.lower() or "qwen" in model_type:
+            return (
+                f"❌ **Unsupported architecture: Qwen2-VL**\n\n"
+                f"The model `{model_id}` uses the Qwen2-VL architecture, which requires "
+                "specific positional tokens and prompt templates that deviate from the "
+                "standard image-to-text pipeline.\n\n"
+                "Please use a BLIP, GIT, or ViT-GPT2 based model instead.",
+                f"**Model:** {_current_model_name}",
+            )
+
         # Attempt load via AutoProcessor + AutoModelForCausalLM
         processor = None
         vision_model = None
@@ -188,7 +222,7 @@ def validate_and_load_image_model(hf_model_id: str):
 
         print(f"Loading VL model: {model_id} …")
         processor = AutoProcessor.from_pretrained(model_id)
-        vision_model = AutoModelForCausalLM.from_pretrained(
+        vision_model = AutoModelForImageTextToText.from_pretrained(
             model_id,
             device_map="auto",
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
@@ -624,57 +658,48 @@ def compare_multiple_images(num_images=3):
 # -------------------------
 # These are self-contained and use a separate global model from the GIT/ViT-GPT2 above.
 
-_blip_processor = None
-_blip_model = None
-_blip_device = "cuda" if torch.cuda.is_available() else "cpu"
-
-def load_blip_model():
-    """Lazy-load the BLIP model for token-level IG analysis."""
-    global _blip_processor, _blip_model
-    if _blip_model is None:
-        print("DEBUG: [load_blip_model] Starting to load BLIP model...")
-        print("DEBUG: [load_blip_model] Loading processor...")
-        _blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-        print("DEBUG: [load_blip_model] Processor loaded. Now loading model weights...")
-        _blip_model = BlipForConditionalGeneration.from_pretrained(
-            "Salesforce/blip-image-captioning-base",
-            device_map="auto",
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
-        )
-        print("DEBUG: [load_blip_model] Model weights loaded. Setting to eval mode...")
-        _blip_model.eval()
-        print(f"DEBUG: [load_blip_model] BLIP model loaded on {_blip_device} successfully.")
-    return _blip_processor, _blip_model
-
+# ---------------------------------------------------------
+# ANALYSIS HELPERS (GENERIC FOR IMAGE-TO-TEXT)
+# ---------------------------------------------------------
+# These now use the global 'vision_model' and 'processor'
+# if they exist, otherwise they trigger initialize_model().
 
 def blip_compute_integrated_gradients(image_pil, caption, target_token_idx, n_steps=50):
     """
-    Compute Integrated Gradients for a specific token in the BLIP-generated caption.
+    Compute Integrated Gradients for a specific token in the generated caption.
     Returns a normalised (H x W) attribution map as a numpy array.
     """
+    global processor, vision_model
+    if vision_model is None or processor is None:
+        initialize_model()
+        
     try:
-        proc, mdl = load_blip_model()
-
-        inputs = proc(image_pil, return_tensors="pt").to(_blip_device)
+        device = _get_device()
+        
+        # Standard input for image-to-text models
+        inputs = processor(images=image_pil, text=caption, return_tensors="pt")
+        inputs = _to_device(inputs, device)
         pixel_values = inputs.pixel_values
 
-        text_inputs = proc(
+        text_inputs = processor(
             text=caption,
             return_tensors="pt",
             padding=True,
             truncation=True
-        ).to(_blip_device)
+        )
+        text_inputs = _to_device(text_inputs, device)
         input_ids = text_inputs["input_ids"]
         attention_mask = text_inputs["attention_mask"]
 
         def forward_func(pv):
-            outputs = mdl(
+            outputs = vision_model(
                 pixel_values=pv,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 return_dict=True,
             )
             logits = outputs.logits
+            # We want attribution for the specific target token and its predicted ID
             return logits[:, target_token_idx, input_ids[:, target_token_idx]]
 
         ig = IntegratedGradients(forward_func)
@@ -687,7 +712,10 @@ def blip_compute_integrated_gradients(image_pil, caption, target_token_idx, n_st
         )
 
         attr = attributions.squeeze(0).cpu().detach().numpy()
-        attr = np.abs(attr).sum(axis=0)  # collapse channels
+        # Some models might have different channel orders, but generally it's RGB
+        if attr.ndim == 3:
+            attr = np.abs(attr).sum(axis=0)  # collapse channels
+        
         attr_min, attr_max = attr.min(), attr.max()
         if attr_max > attr_min:
             attr = (attr - attr_min) / (attr_max - attr_min)
@@ -752,13 +780,17 @@ def blip_create_attribution_overlay(image_pil, attribution_map, opacity=0.6):
 
 def blip_generate_caption_only(image_pil):
     """
-    Generate a caption + token list for an image using BLIP.
+    Generate a caption + token list for an image using the currently loaded model.
     Accepts a plain PIL Image or the Gradio ImageEditor dict.
 
     Returns:
         caption (str), tokens_str (str), None,
         original_pil (PIL.Image), caption (str), tokens (list)
     """
+    global processor, vision_model
+    if vision_model is None or processor is None:
+        initialize_model()
+
     if image_pil is None:
         return "Please upload an image.", "", None, None, "", []
 
@@ -769,42 +801,47 @@ def blip_generate_caption_only(image_pil):
         return "No image found in editor.", "", None, None, "", []
 
     try:
-        print("DEBUG: [blip_generate_caption_only] Calling load_blip_model...")
-        proc, mdl = load_blip_model()
-        print("DEBUG: [blip_generate_caption_only] Successfully grabbed model instance.")
-
-        print("DEBUG: [blip_generate_caption_only] Prepping inputs...")
-        inputs = proc(image_pil, return_tensors="pt").to(_blip_device)
-        print("DEBUG: [blip_generate_caption_only] Generating forward pass...")
+        device = _get_device()
+        mdl = vision_model
+        proc = processor
+        
+        print(f"DEBUG: [generate_caption] Using model: {_current_model_name}")
+        # Standard input (some models like GIT work better with an empty prompt)
+        inputs = proc(images=image_pil, text="", return_tensors="pt")
+        inputs = _to_device(inputs, device)
+        
+        print("DEBUG: [generate_caption] Generating captions...")
         with torch.no_grad():
-            out = mdl.generate(**inputs, max_length=50)
-        print("DEBUG: [blip_generate_caption_only] Generation complete. Decoding...")
-        caption = proc.decode(out[0], skip_special_tokens=True)
-        print(f"DEBUG: [blip_generate_caption_only] Caption: {caption}")
+            out = mdl.generate(**inputs, max_new_tokens=50)
+            
+        # Decode only the new tokens if the model includes prompt in output
+        input_len = inputs["input_ids"].shape[-1] if "input_ids" in inputs else 0
+        generated_ids = out[:, input_len:]
+        caption = proc.decode(generated_ids[0], skip_special_tokens=True)
+        print(f"DEBUG: [generate_caption] Caption: {caption}")
 
         # Tokenise so the user can pick a token index
-        print("DEBUG: [blip_generate_caption_only] Tokenising caption...")
         import os
-        os.environ["TOKENIZERS_PARALLELISM"] = "false" # Prevent deadlock in fast tokenizers
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
         text_inputs = proc(
             text=caption,
             return_tensors="pt",
             padding=True,
             truncation=True,
-        ).to(_blip_device)
-        print("DEBUG: [blip_generate_caption_only] Tokenisation completed. Extracting individual tokens...")
+        )
+        text_inputs = _to_device(text_inputs, device)
+        
         tokens = []
         for tid in text_inputs["input_ids"][0]:
             tok = proc.decode([tid], skip_special_tokens=True)
             if tok.strip():
                 tokens.append(tok)
 
-        print("DEBUG: [blip_generate_caption_only] Tokens extracted.")
         tokens_str = "\n".join([f"{i}: {t}" for i, t in enumerate(tokens)])
         return caption, tokens_str, None, image_pil, caption, tokens
 
     except Exception as exc:
-        print(f"DEBUG: [blip_generate_caption_only] Exception caught: {exc}")
+        print(f"DEBUG: [generate_caption] Exception caught: {exc}")
         traceback.print_exc()
         return f"Error: {exc}", "", None, None, "", []
 

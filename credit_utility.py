@@ -102,10 +102,14 @@ def _initialize_model():
             
             # ATTEMPT DYNAMIC FEATURE DETECTION
             global FEATURE_NAMES
+            detected_features = None
             if hasattr(_model, "feature_names_in_"):
-                FEATURE_NAMES = list(_model.feature_names_in_)
+                detected_features = list(_model.feature_names_in_)
             elif hasattr(_model, "feature_names"):
-                FEATURE_NAMES = list(_model.feature_names)
+                detected_features = list(_model.feature_names)
+            
+            if detected_features:
+                FEATURE_NAMES = detected_features
             # Else keep defaults for the credit model if it's the default repo
             
             print(f"Model loaded from HuggingFace: {_current_model_name}")
@@ -153,82 +157,6 @@ def _initialize_model():
     print("SHAP explainer initialized")
 
 
-def validate_and_load_credit_model(hf_model_id: str):
-    """Validate and load a HuggingFace supervised model by URL or ID."""
-    global _model, _scaler, _explainer, _current_model_name
-
-    if not hf_model_id or not hf_model_id.strip():
-        return "⚠️ Please enter a HuggingFace model ID.", f"**Model:** {_current_model_name}"
-
-    model_id = hf_model_id.strip()
-    if model_id.startswith("https://huggingface.co/"):
-        model_id = model_id[len("https://huggingface.co/"):]
-    model_id = model_id.rstrip("/")
-
-    # Check if it's one of our built-in synthetic model names
-    if model_id in CREDIT_MODELS and CREDIT_MODELS[model_id]["repo_id"] is None:
-        _current_model_name = model_id
-        _model = None  # force reload
-        _initialize_model()
-        return f"✅ **Loaded synthetic model:** `{model_id}`", f"**Model:** {model_id}"
-
-    try:
-        from huggingface_hub import model_info as hf_model_info
-        from huggingface_hub import hf_hub_download
-        from huggingface_hub.utils import RepositoryNotFoundError, GatedRepoError
-
-        try:
-            info = hf_model_info(model_id)
-        except RepositoryNotFoundError:
-            return f"❌ **Repository not found:** `{model_id}`", f"**Model:** {_current_model_name}"
-        except GatedRepoError:
-            return f"❌ **Gated repository:** `{model_id}`", f"**Model:** {_current_model_name}"
-
-        # Try to find a model file ending in .joblib or .pkl
-        filenames = [s.rfilename for s in info.siblings if s.rfilename.endswith((".joblib", ".pkl", ".pickle"))]
-        if not filenames:
-            return f"❌ **No .joblib or .pkl file found in `{model_id}`.**", f"**Model:** {_current_model_name}"
-            
-        filename = filenames[0]
-        
-        print(f"Downloading {filename} from {model_id}...")
-        model_path = hf_hub_download(repo_id=model_id, filename=filename)
-        
-        import joblib
-        import pickle
-        import shap
-        
-        try:
-            new_model = joblib.load(model_path)
-        except:
-            with open(model_path, "rb") as f:
-                new_model = pickle.load(f)
-
-        _model = new_model
-        _current_model_name = model_id
-        
-        # ATTEMPT DYNAMIC FEATURE DETECTION
-        global FEATURE_NAMES
-        if hasattr(_model, "feature_names_in_"):
-            FEATURE_NAMES = list(_model.feature_names_in_)
-        elif hasattr(_model, "feature_names"):
-            FEATURE_NAMES = list(_model.feature_names)
-        elif hasattr(_model, "get_booster"): # XGBoost specific
-            try:
-                FEATURE_NAMES = _model.get_booster().feature_names
-            except: pass
-            
-        # We assume it's a tree model for default SHAP
-        try:
-            _explainer = shap.TreeExplainer(_model)
-        except Exception as e:
-            print("Could not initialize TreeExplainer, model might not be tree based.")
-            _explainer = None
-            
-        return f"✅ **Loaded:** `{model_id}/{filename}` | **Features:** {len(FEATURE_NAMES)} found.", f"**Model:** {model_id}"
-
-    except Exception as e:
-        return f"❌ **Error validating `{model_id}`:** {str(e)}", f"**Model:** {_current_model_name}"
 
 # ADDED: Model management functions
 def get_credit_model_choices():
@@ -288,9 +216,18 @@ def validate_and_load_credit_model(hf_model_id: str):
         model_id = model_id[len("https://huggingface.co/"):]
     model_id = model_id.rstrip("/")
 
+    # Check if it's one of our built-in synthetic model names
+    if model_id in CREDIT_MODELS and CREDIT_MODELS[model_id].get("repo_id") is None:
+        _current_model_name = model_id
+        _model = None  # force reload
+        _initialize_model()
+        return f"✅ **Loaded synthetic model:** `{model_id}`", f"**Model:** {model_id}"
+
     try:
         from huggingface_hub import model_info as hf_model_info
+        from huggingface_hub import list_repo_files, hf_hub_download
         from huggingface_hub.utils import RepositoryNotFoundError, GatedRepoError
+        import joblib, pickle, shap
 
         try:
             info = hf_model_info(model_id)
@@ -320,20 +257,32 @@ def validate_and_load_credit_model(hf_model_id: str):
                 f"**Model:** {_current_model_name}",
             )
 
-        # Attempt to download and load via hf_hub_download + joblib/pickle
-        _model = None
-        _scaler = None
-        _explainer = None
-        _current_model_name = model_id
-
-        # Find a .pkl or .joblib file in the repo
-        from huggingface_hub import list_repo_files, hf_hub_download
-        import joblib, pickle
-
+        # Attempt to download and load
         files = list(list_repo_files(model_id))
-        model_file = next(
-            (f for f in files if f.endswith(".pkl") or f.endswith(".joblib")), None
-        )
+        
+        # 1. Prefer known filename from registry if available
+        model_file = None
+        if model_id in CREDIT_MODELS:
+            model_file = CREDIT_MODELS[model_id].get("filename")
+            if model_file not in files:
+                model_file = None # Registry file not found in repo
+        
+        # 2. Heuristic: Prefer XGBoost, then LightGBM, then any .pkl/.joblib
+        if model_file is None:
+            # Try to find XGBoost then LightGBM specifically to avoid CatBoost issues
+            candidates = ["xgboost", "lightgbm"]
+            for cand in candidates:
+                model_file = next((f for f in files if cand in f.lower() and (f.endswith(".pkl") or f.endswith(".joblib"))), None)
+                if model_file: break
+                
+        # 3. Last resort: any .pkl or .joblib that isn't catboost
+        if model_file is None:
+            model_file = next((f for f in files if "catboost" not in f.lower() and (f.endswith(".pkl") or f.endswith(".joblib"))), None)
+            
+        # 4. Absolute last resort: just pick the first one
+        if model_file is None:
+            model_file = next((f for f in files if f.endswith(".pkl") or f.endswith(".joblib")), None)
+
         if model_file is None:
             return (
                 f"⚠️ **No .pkl/.joblib file found in `{model_id}`.**\n\n"
@@ -341,12 +290,32 @@ def validate_and_load_credit_model(hf_model_id: str):
                 f"**Model:** {_current_model_name}",
             )
 
+        print(f"Loading model file: {model_file} from {model_id}...")
         path = hf_hub_download(repo_id=model_id, filename=model_file)
         try:
-            _model = joblib.load(path)
+            loaded_model = joblib.load(path)
         except Exception:
             with open(path, "rb") as f:
-                _model = pickle.load(f)
+                loaded_model = pickle.load(f)
+
+        _model = loaded_model
+        _current_model_name = model_id
+        _scaler = None # Reset scaler for external models
+
+        # ATTEMPT DYNAMIC FEATURE DETECTION
+        global FEATURE_NAMES
+        detected_features = None
+        if hasattr(_model, "feature_names_in_"):
+            detected_features = list(_model.feature_names_in_)
+        elif hasattr(_model, "feature_names"):
+            detected_features = list(_model.feature_names)
+        elif hasattr(_model, "get_booster"): # XGBoost specific
+            try:
+                detected_features = _model.get_booster().feature_names
+            except: pass
+            
+        if detected_features:
+            FEATURE_NAMES = list(detected_features)
 
         try:
             _explainer = shap.TreeExplainer(_model)

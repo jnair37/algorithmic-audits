@@ -756,6 +756,16 @@ def reset_credit_data():
     )
 
 
+def _fig_to_base64(fig):
+    """Convert a Matplotlib figure to a base64 PNG data URI."""
+    import base64
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    img_str = base64.b64encode(buf.getvalue()).decode('utf-8')
+    return f"data:image/png;base64,{img_str}"
+
+
 def get_credit_report_html(data):
     """
     Generate a full HTML report for a credit risk analysis version.
@@ -798,6 +808,12 @@ def get_credit_report_html(data):
         </div>
         
         <div class="section">
+            <h2>Feature Attributions</h2>
+            <p>The following chart identifies which features most heavily influenced the model's prediction of risk.</p>
+            {f'<img src="{data["graph_b64"]}" style="max-width:100%; border-radius:8px; border:1px solid #ddd;"/>' if data.get("graph_b64") else "<p><em>No explanation graph available.</em></p>"}
+        </div>
+        
+        <div class="section">
             <h2>Applicant Information</h2>
             <table>
                 <tr><th>Metric</th><th>Value</th></tr>
@@ -824,7 +840,8 @@ def get_credit_report_html(data):
 
 def save_credit_version(age, income, credit_score, debt_ratio, 
                         employment_years, loan_amount, num_accounts, 
-                        delinquencies, risk_output, version_name=None):
+                        delinquencies, risk_output, version_name=None,
+                        explanation_fig=None):
     """
     Save the current credit analysis version to global storage.
     """
@@ -846,8 +863,15 @@ def save_credit_version(age, income, credit_score, debt_ratio,
         'loan_amount': loan_amount,
         'num_accounts': num_accounts,
         'delinquencies': delinquencies,
-        'risk_output': risk_output
+        'risk_output': risk_output,
+        'graph_b64': None
     }
+
+    if explanation_fig:
+        try:
+            data['graph_b64'] = _fig_to_base64(explanation_fig)
+        except Exception as e:
+            print(f"Error converting credit figure to base64: {e}")
     
     # Generate HTML content for this version
     data['html'] = get_credit_report_html(data)

@@ -1057,14 +1057,40 @@ def generate_word_freq_chart(results_g1, results_g2):
 _image_versions = {}   # label -> {caption, attr_b64, original_b64, timestamp}
 
 
-def _pil_to_b64(pil_img):
-    """Encode a PIL image as a base64 PNG data-URI."""
-    import base64, io as _io
+def _pil_to_base64(pil_img):
+    """Encode a PIL image as a base64 string."""
+    import base64
+    from io import BytesIO
     if pil_img is None:
         return ""
-    buf = _io.BytesIO()
-    pil_img.save(buf, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    buffered = BytesIO()
+    try:
+        # If it's a numpy array (sometimes happens with Gradio), convert to PIL
+        if hasattr(pil_img, "astype"):
+            from PIL import Image
+            pil_img = Image.fromarray(pil_img.astype('uint8'))
+        
+        pil_img.save(buffered, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode('utf-8')
+    except Exception as e:
+        print(f"Error converting image to base64: {e}")
+        return ""
+
+
+def _fig_to_base64(fig):
+    """Convert a Matplotlib figure to a base64 string."""
+    import base64
+    from io import BytesIO
+    if fig is None:
+        return ""
+    buf = BytesIO()
+    try:
+        fig.savefig(buf, format='png', bbox_inches='tight')
+        buf.seek(0)
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode('utf-8')
+    except Exception as e:
+        # If it's already a base64 string or PIL image, try _pil_to_base64
+        return _pil_to_base64(fig)
 
 
 def save_image_version(caption, attribution_pil, original_pil, batch_mode=False, batch_graph=None, results_g1=None, results_g2=None, auto_label=None):
@@ -1092,21 +1118,21 @@ def save_image_version(caption, attribution_pil, original_pil, batch_mode=False,
             for item in results_g1:
                 stored_g1.append({
                     "caption": item.get("caption", ""),
-                    "img_b64": _pil_to_b64(item.get("image")),
+                    "img_b64": _pil_to_base64(item.get("image")),
                 })
         if results_g2:
             for item in results_g2:
                 stored_g2.append({
                     "caption": item.get("caption", ""),
-                    "img_b64": _pil_to_b64(item.get("image")),
+                    "img_b64": _pil_to_base64(item.get("image")),
                 })
 
     _image_versions[label] = {
         "caption": caption or "(no caption)",
-        "attr_b64": _pil_to_b64(attribution_pil),
-        "original_b64": _pil_to_b64(original_pil),
+        "attr_b64": _pil_to_base64(attribution_pil),
+        "original_b64": _pil_to_base64(original_pil),
         "batch_mode": batch_mode,
-        "graph_b64": _pil_to_b64(batch_graph) if batch_mode else "",
+        "graph_b64": _fig_to_base64(batch_graph) if batch_mode else "",
         "results_g1": stored_g1,
         "results_g2": stored_g2,
         "timestamp": timestamp,

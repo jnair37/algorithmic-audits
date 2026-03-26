@@ -317,14 +317,14 @@ LEGEND_HTML = """
     </div>
 </div>
 """
-with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) as demo:
+with gr.Blocks(title="ExplanAudit: Algorithmic Auditing Toolkit", css=custom_css, theme=theme) as demo:
     with gr.Column(visible=True) as intro_page:
         with gr.Row():
             with gr.Column(scale=1):
                 pass
             with gr.Column(scale=3):
-                gr.Markdown("<h1 style='text-align: center;'>Algorithmic Audit Toolkit</h1>")
-                gr.Markdown("<h3 style='text-align: center;'>Prototype Auditing Interface</h3>")
+                gr.Markdown("<h1 style='text-align: center;'>ExplanAudit: Algorithmic Auditing with Explanations</h1>")
+                #gr.Markdown("<h3 style='text-align: center;'>Prototype Auditing Interface</h3>")
                 gr.Markdown("The following interface is meant to be used for gray-box auditing with access to an explanation. Each tab represents a different type of functionality (resume screening, image captioning, and credit risk) for which you can try out multiple models and interpretability methods.")
                 
                 gr.Markdown("### Instructions")
@@ -340,7 +340,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
 
     with gr.Row(visible=False) as main_app_layout:
         with gr.Column(scale=1, min_width=200) as sidebar:
-            gr.Markdown("### Navigation")
+            gr.Markdown("### ExplanAudit")
             nav_home_btn = gr.Button("Home", variant="secondary")
             gr.Markdown("---")
             nav_resume_btn = gr.Button("Language", variant="primary")
@@ -378,8 +378,8 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                 with gr.Tabs(selected=0) as screener_steps:
     
                     # ── Step 0: Start Here ──────────────────────────────
-                    with gr.Tab("Step 0: Start Here", id=-1):
-                        gr.Markdown("### Welcome to the Algorithmic Audit Toolkit")
+                    with gr.Tab("Optional: Upload Previous", id=-1):
+                        gr.Markdown("### Welcome to ExplanAudit")
                         gr.Markdown("You can start a new audit session or import a previously saved configuration.")
                         
                         with gr.Group():
@@ -1313,7 +1313,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
     
                 gr.Markdown("## Image Captioning & Interpretability")
                 gr.Markdown(
-                    "Probe how vision-language models (BLIP) generate captions. "
+                    "Probe how vision-language models such as Salesforce's BLIP generate captions. "
                     "Upload a single image with optional occlusion, or run batch analysis "
                     "across multiple images and compare across sessions."
                 )
@@ -1331,7 +1331,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                         with gr.Row():
                             with gr.Column(scale=1):
                                 with gr.Accordion("1. Configure Model", open=True):
-                                    gr.Markdown("Replace the default vision-language model with a HuggingFace one.")
+                                    gr.Markdown("Use the default vision-language model, or replace it with any model available through HuggingFace.")
                                     image_model_input = gr.Textbox(
                                         label="HuggingFace Model ID or URL",
                                         placeholder="e.g. Salesforce/blip-image-captioning-base",
@@ -1385,17 +1385,17 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                                         img_batch_prompt_g2 = gr.Textbox(label="Group 2: Image Prompt", lines=2)
                                         img_batch_gen_count = gr.Slider(minimum=1, maximum=5, value=2, step=1, label="Images per group (max 5)")
     
-                                    image_current_model_display = gr.Markdown("**Model:** microsoft/git-large-coco")
+                                    image_current_model_display = gr.Markdown("")
                                         
-                                    gr.Markdown("#### Analysis Settings")
-                                    with gr.Accordion("Attribution Settings", open=True):
+                                    gr.Markdown("#### Explanation Settings")
+                                    with gr.Accordion("Customize Explanation (Attribution Map) Details", open=True):
                                         img_opacity_slider = gr.Slider(
                                             minimum=0.0, maximum=1.0, value=0.6, step=0.05,
                                             label="Attribution Overlay Opacity"
                                         )
                                         img_steps_slider = gr.Slider(
                                             minimum=10, maximum=100, value=50, step=10,
-                                            label="Integration Steps (more = slower, more accurate)"
+                                            label="Integration Steps (more steps = slower, but more accurate)"
                                         )
     
                         gr.Markdown("---")
@@ -1575,6 +1575,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                         gr.update(visible=enabled),        # batch panel
                         gr.update(visible=not enabled),    # analyze btn
                         gr.update(visible=enabled),        # batch btn
+                        enabled                            # img_batch_mode state
                     )
     
                 # Batch-mode source toggle
@@ -1592,7 +1593,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                     fn=toggle_img_batch,
                     inputs=img_batch_toggle,
                     outputs=[img_single_panel, img_batch_panel,
-                             img_analyze_btn, img_batch_btn]
+                             img_analyze_btn, img_batch_btn, img_batch_mode]
                 )
     
                 # Step nav helpers
@@ -1616,6 +1617,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                         gr.update(interactive=True),
                         gr.update(visible=True),
                         gr.update(visible=False),
+                        False     # img_batch_mode
                     )
     
                 img_analyze_btn.click(
@@ -1631,6 +1633,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                         img_step1_next_btn, img_step1_loading,
                         img_step2_tab, img_step3_tab,
                         img_single_results, img_batch_results_panel,
+                        img_batch_mode
                     ],
                     show_progress="full"
                 )
@@ -1671,6 +1674,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                         gr.update(interactive=True),
                         gr.update(visible=False),    # hide single results
                         gr.update(visible=True),     # show batch results
+                        True                         # img_batch_mode
                     )
     
                 img_batch_btn.click(
@@ -1687,6 +1691,7 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                         img_step1_next_btn, img_step1_loading,
                         img_step2_tab, img_step3_tab,
                         img_single_results, img_batch_results_panel,
+                        img_batch_mode
                     ],
                     show_progress="full"
                 )
@@ -1736,7 +1741,21 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                     ]
                 )
     
-                # (Remaining click handlers are fine as is)
+                # Single-image: Compute Attribution
+                img_compute_btn.click(
+                    fn=blip_analyze_image,
+                    inputs=[
+                        img_original_out, img_opacity_slider, img_steps_slider,
+                        img_token_slider, img_caption_state, img_tokens_state
+                    ],
+                    outputs=[
+                        img_caption_out, img_tokens_out,
+                        img_attr_out, img_original_out,
+                        img_caption_state, img_tokens_state
+                    ]
+                )
+    
+                # (Remaining click handlers)
     
                 # Batch: Compute Attribution for selected image (from results)
                 img_batch_compute_btn.click(
@@ -1999,7 +2018,8 @@ with gr.Blocks(title="Algorithmic Audit Toolkit", css=custom_css, theme=theme) a
                     # 3. Autosave
                     choices, msg = save_credit_version(
                         age, income, credit_score, debt_ratio, employment_years, 
-                        loan_amount, num_accounts, delinquencies, html
+                        loan_amount, num_accounts, delinquencies, html,
+                        explanation_fig=fig
                     )
                     
                     # 3. Update UI

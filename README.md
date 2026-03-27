@@ -9,4 +9,4 @@ As machine learning algorithms are used in increasingly consequential settings, 
 ## Instructions for use
 
 The tool is deployed to the web through Google Cloud Platform here: https://gradio-app-805328664778.us-central1.run.app/
-However, there is currently significant latency when using this site, so we provide an alternative way to run through Colab - if you download demo_colab.ipynb and run the notebook step by step, you should be able to run the interface locally. 
+However, there is currently significant latency when using this site, so in case of difficulties we provide an alternative way to run through Google Colab. If you open ExplanAudit.ipynb in Colab and run the notebook step by step, you should be able to run the interface locally at a faster processing speed. 

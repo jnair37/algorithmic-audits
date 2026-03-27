@@ -12,3 +12,4 @@ The tool is deployed to the web through Google Cloud Platform here: https://grad
 However, there is currently significant latency when using this site, so in case of difficulties we provide an alternative way to run through Google Colab. 
 
 If you open **ExplanAudit.ipynb** in Colab and run the notebook step by step, you should be able to run the interface on your browser at a faster processing speed. 
+(Note that you will need a HuggingFace token and if you want to use Llama, you will need to be approved to use that model as well.)

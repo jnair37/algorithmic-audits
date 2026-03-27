@@ -15,6 +15,8 @@ import joblib
 import pickle
 import io
 from datetime import datetime
+import tempfile
+import os
 
 # ADDED: Track current model
 _current_model_name = "Alfazril/credit-risk-prediction"
@@ -52,7 +54,7 @@ CREDIT_MODELS = {
 # Set style for visualizations
 sns.set_style("whitegrid")
 
-# Feature names from the model
+# Features from the model (can be updated dynamically)
 FEATURE_NAMES = [
     'person_age', 'person_income', 'person_emp_length', 'loan_amnt',
     'loan_int_rate', 'loan_percent_income', 'cb_person_cred_hist_length',
@@ -71,6 +73,7 @@ FEATURE_NAMES = [
 _model = None
 _scaler = None
 _explainer = None
+_feature_mapping = {} # Store mapping of original names to clean names
 
 def _initialize_model():
     """Initialize or load the credit risk model"""
@@ -96,6 +99,18 @@ def _initialize_model():
             except:
                 with open(model_path, "rb") as f:
                     _model = pickle.load(f)
+            
+            # ATTEMPT DYNAMIC FEATURE DETECTION
+            global FEATURE_NAMES
+            detected_features = None
+            if hasattr(_model, "feature_names_in_"):
+                detected_features = list(_model.feature_names_in_)
+            elif hasattr(_model, "feature_names"):
+                detected_features = list(_model.feature_names)
+            
+            if detected_features:
+                FEATURE_NAMES = detected_features
+            # Else keep defaults for the credit model if it's the default repo
             
             print(f"Model loaded from HuggingFace: {_current_model_name}")
             
@@ -141,6 +156,8 @@ def _initialize_model():
     _explainer = shap.TreeExplainer(_model)
     print("SHAP explainer initialized")
 
+
+
 # ADDED: Model management functions
 def get_credit_model_choices():
     """Return list of available credit risk models"""
@@ -173,6 +190,148 @@ def switch_credit_model(model_name):
     
     return status_msg, model_display
 
+
+# Accepted pipeline / model types for supervised credit auditing
+_CREDIT_PIPELINE_TAGS = {
+    "tabular-classification", "text-classification", "tabular-regression",
+    "structured-data-classification",
+}
+_CREDIT_MODEL_TYPES = {"xgboost", "lightgbm", "sklearn", "random_forest", "gradient_boosting"}
+
+
+def validate_and_load_credit_model(hf_model_id: str):
+    """
+    Validate and load a HuggingFace supervised / tabular model by URL or ID.
+
+    Returns:
+        (status_markdown, model_display_markdown)
+    """
+    global _model, _scaler, _explainer, _current_model_name
+
+    if not hf_model_id or not hf_model_id.strip():
+        return "⚠️ Please enter a HuggingFace model ID.", f"**Model:** {_current_model_name}"
+
+    model_id = hf_model_id.strip()
+    if model_id.startswith("https://huggingface.co/"):
+        model_id = model_id[len("https://huggingface.co/"):]
+    model_id = model_id.rstrip("/")
+
+    # Check if it's one of our built-in synthetic model names
+    if model_id in CREDIT_MODELS and CREDIT_MODELS[model_id].get("repo_id") is None:
+        _current_model_name = model_id
+        _model = None  # force reload
+        _initialize_model()
+        return f"✅ **Loaded synthetic model:** `{model_id}`", f"**Model:** {model_id}"
+
+    try:
+        from huggingface_hub import model_info as hf_model_info
+        from huggingface_hub import list_repo_files, hf_hub_download
+        from huggingface_hub.utils import RepositoryNotFoundError, GatedRepoError
+        import joblib, pickle, shap
+
+        try:
+            info = hf_model_info(model_id)
+        except RepositoryNotFoundError:
+            return (
+                f"❌ **Repository not found:** `{model_id}`\n\nPlease check the model ID or URL.",
+                f"**Model:** {_current_model_name}",
+            )
+        except GatedRepoError:
+            return (
+                f"❌ **Gated repository:** `{model_id}`\n\nAccept the model license on HuggingFace first.",
+                f"**Model:** {_current_model_name}",
+            )
+
+        pipeline_tag = (info.pipeline_tag or "").lower()
+        model_type = ""
+        if info.config and isinstance(info.config, dict):
+            model_type = info.config.get("model_type", "").lower()
+
+        accepted = pipeline_tag in _CREDIT_PIPELINE_TAGS or model_type in _CREDIT_MODEL_TYPES
+
+        if not accepted and pipeline_tag and pipeline_tag not in ("", "null"):
+            return (
+                f"❌ **Unsupported model type:** `{model_id}`\n\n"
+                f"Detected pipeline: `{pipeline_tag}` / architecture: `{model_type or 'unknown'}`\n\n"
+                "Only tabular-classification / structured-data models are supported for credit auditing.",
+                f"**Model:** {_current_model_name}",
+            )
+
+        # Attempt to download and load
+        files = list(list_repo_files(model_id))
+        
+        # 1. Prefer known filename from registry if available
+        model_file = None
+        if model_id in CREDIT_MODELS:
+            model_file = CREDIT_MODELS[model_id].get("filename")
+            if model_file not in files:
+                model_file = None # Registry file not found in repo
+        
+        # 2. Heuristic: Prefer XGBoost, then LightGBM, then any .pkl/.joblib
+        if model_file is None:
+            # Try to find XGBoost then LightGBM specifically to avoid CatBoost issues
+            candidates = ["xgboost", "lightgbm"]
+            for cand in candidates:
+                model_file = next((f for f in files if cand in f.lower() and (f.endswith(".pkl") or f.endswith(".joblib"))), None)
+                if model_file: break
+                
+        # 3. Last resort: any .pkl or .joblib that isn't catboost
+        if model_file is None:
+            model_file = next((f for f in files if "catboost" not in f.lower() and (f.endswith(".pkl") or f.endswith(".joblib"))), None)
+            
+        # 4. Absolute last resort: just pick the first one
+        if model_file is None:
+            model_file = next((f for f in files if f.endswith(".pkl") or f.endswith(".joblib")), None)
+
+        if model_file is None:
+            return (
+                f"⚠️ **No .pkl/.joblib file found in `{model_id}`.**\n\n"
+                "The supervised model tab requires a pickled scikit-learn compatible model.",
+                f"**Model:** {_current_model_name}",
+            )
+
+        print(f"Loading model file: {model_file} from {model_id}...")
+        path = hf_hub_download(repo_id=model_id, filename=model_file)
+        try:
+            loaded_model = joblib.load(path)
+        except Exception:
+            with open(path, "rb") as f:
+                loaded_model = pickle.load(f)
+
+        _model = loaded_model
+        _current_model_name = model_id
+        _scaler = None # Reset scaler for external models
+
+        # ATTEMPT DYNAMIC FEATURE DETECTION
+        global FEATURE_NAMES
+        detected_features = None
+        if hasattr(_model, "feature_names_in_"):
+            detected_features = list(_model.feature_names_in_)
+        elif hasattr(_model, "feature_names"):
+            detected_features = list(_model.feature_names)
+        elif hasattr(_model, "get_booster"): # XGBoost specific
+            try:
+                detected_features = _model.get_booster().feature_names
+            except: pass
+            
+        if detected_features:
+            FEATURE_NAMES = list(detected_features)
+
+        try:
+            _explainer = shap.TreeExplainer(_model)
+        except Exception:
+            _explainer = None  # Non-tree model — SHAP explainer may not work
+
+        status_msg = f"✅ **Loaded:** `{model_id}` (file: `{model_file}`)"
+        model_display = f"**Model:** {model_id}"
+        return status_msg, model_display
+
+    except Exception as e:
+        return (
+            f"❌ **Error loading `{model_id}`:** {str(e)}",
+            f"**Model:** {_current_model_name}",
+        )
+
 def sample_credit_data():
     """Returns default sample credit applicant data"""
     return {
@@ -188,9 +347,17 @@ def sample_credit_data():
 
 
 def _map_inputs_to_features(age, income, credit_score, debt_ratio, 
-                           employment_years, loan_amount, num_accounts, delinquencies):
-    """Map Gradio inputs to model features"""
+                           employment_years, loan_amount, num_accounts, delinquencies,
+                           feature_names=None):
+    """Map Gradio inputs to model features, handles both standard credit and general models"""
     
+    # If feature_names is likely the default credit features (29 features), use standard mapping
+    if feature_names is not None and len(feature_names) != 29:
+        return _map_general_inputs(age, income, credit_score, debt_ratio,
+                                  employment_years, loan_amount, num_accounts, delinquencies,
+                                  feature_names)
+
+    # Standard Credit Mapping (legacy)
     # Calculate derived features
     loan_percent_income = loan_amount / income
     income_to_age_ratio = income / age
@@ -259,23 +426,64 @@ def _map_inputs_to_features(age, income, credit_score, debt_ratio,
     
     return features
 
+def _map_general_inputs(age, income, credit_score, debt_ratio,
+                        employment_years, loan_amount, num_accounts, delinquencies,
+                        feature_names):
+    """Attempt to map the 8 standard UI sliders to arbitrary feature names"""
+    # Simple mapping dictionary for fuzzy matching
+    mapping = {
+        'age': age, 'income': income, 'score': credit_score, 'debt': debt_ratio,
+        'employment': employment_years, 'loan': loan_amount, 'account': num_accounts,
+        'delinquency': delinquencies, 'default': delinquencies
+    }
+    
+    feature_vector = []
+    for f in feature_names:
+        val = 0.0 # Default fallback
+        f_lower = f.lower()
+        # Try to find a match in the mapping
+        found = False
+        for key, value in mapping.items():
+            if key in f_lower:
+                val = float(value)
+                found = True
+                break
+        feature_vector.append(val)
+        
+    return np.array(feature_vector).reshape(1, -1)
+
 
 def predict_credit_risk(age, income, credit_score, debt_ratio, 
                        employment_years, loan_amount, num_accounts, 
-                       delinquencies, method):
+                       delinquencies, method, feature_overrides=None):
     """
-    Predict credit risk and return HTML output with feature importance plot
-    
+    Predict risk for any supervised model.
+    Accepts standard 8 inputs + optional feature_overrides dict.
     """
     _initialize_model()
     
-    print("initialized?")
-
-    # Map inputs to features
-    X = _map_inputs_to_features(age, income, credit_score, debt_ratio,
-                                employment_years, loan_amount, num_accounts, delinquencies)
+    global FEATURE_NAMES
     
-    # Scale if using synthetic model
+    # Map inputs to features
+    if len(FEATURE_NAMES) == 29 and "person_age" in FEATURE_NAMES:
+        X = _map_inputs_to_features(age, income, credit_score, debt_ratio,
+                                    employment_years, loan_amount, num_accounts, delinquencies,
+                                    feature_names=FEATURE_NAMES)
+    else:
+        # General mapping for arbitrary models
+        X = _map_general_inputs(age, income, credit_score, debt_ratio,
+                                 employment_years, loan_amount, num_accounts, delinquencies,
+                                 FEATURE_NAMES)
+    
+    # Apply overrides if provided (useful for "compatible with any supervised modeling")
+    if feature_overrides:
+        for i, f in enumerate(FEATURE_NAMES):
+            if f in feature_overrides:
+                try:
+                    X[0, i] = float(feature_overrides[f])
+                except: pass
+
+    # Scale if using synthetic model (identified by _scaler being present)
     if _scaler is not None:
         X_scaled = _scaler.transform(X)
     else:
@@ -499,6 +707,9 @@ def compare_scenarios(age, income, credit_score, debt_ratio,
     return fig
 
 
+# Global storage for credit risk versions
+_saved_credit_versions = {}
+
 def reset_credit_data():
     """Reset all input fields to default values"""
     defaults = sample_credit_data()
@@ -514,33 +725,163 @@ def reset_credit_data():
     )
 
 
-def export_credit_report(age, income, credit_score, debt_ratio, 
+def _fig_to_base64(fig):
+    """Convert a Matplotlib figure to a base64 PNG data URI."""
+    import base64
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    img_str = base64.b64encode(buf.getvalue()).decode('utf-8')
+    return f"data:image/png;base64,{img_str}"
+
+
+def get_credit_report_html(data):
+    """
+    Generate a full HTML report for a credit risk analysis version.
+    """
+    timestamp = data.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    age = data.get('age')
+    income = data.get('income')
+    credit_score = data.get('credit_score')
+    debt_ratio = data.get('debt_ratio')
+    employment_years = data.get('employment_years')
+    loan_amount = data.get('loan_amount')
+    num_accounts = data.get('num_accounts')
+    delinquencies = data.get('delinquencies')
+    risk_output = data.get('risk_output', 'N/A')
+    
+    html = f"""
+    <html>
+    <head>
+        <style>
+            body {{ font-family: sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }}
+            .header {{ background-color: #2c3e50; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
+            .section {{ background-color: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 5px solid #3498db; }}
+            .risk-low {{ color: #27ae60; font-weight: bold; font-size: 1.2em; }}
+            .risk-med {{ color: #f39c12; font-weight: bold; font-size: 1.2em; }}
+            .risk-high {{ color: #c0392b; font-weight: bold; font-size: 1.2em; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+            th, td {{ text-align: left; padding: 12px; border-bottom: 1px solid #ddd; }}
+            th {{ background-color: #f2f2f2; }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>Credit Risk Analysis Report</h1>
+            <p>Generated: {timestamp}</p>
+        </div>
+        
+        <div class="section">
+            <h2>Risk Assessment</h2>
+            <div>{risk_output}</div>
+        </div>
+        
+        <div class="section">
+            <h2>Feature Attributions</h2>
+            <p>The following chart identifies which features most heavily influenced the model's prediction of risk.</p>
+            {f'<img src="{data["graph_b64"]}" style="max-width:100%; border-radius:8px; border:1px solid #ddd;"/>' if data.get("graph_b64") else "<p><em>No explanation graph available.</em></p>"}
+        </div>
+        
+        <div class="section">
+            <h2>Applicant Information</h2>
+            <table>
+                <tr><th>Metric</th><th>Value</th></tr>
+                <tr><td>Age</td><td>{age} years</td></tr>
+                <tr><td>Annual Income</td><td>${income:,}</td></tr>
+                <tr><td>Credit Score</td><td>{credit_score}</td></tr>
+                <tr><td>Debt-to-Income Ratio</td><td>{debt_ratio}%</td></tr>
+                <tr><td>Years at Current Job</td><td>{employment_years}</td></tr>
+                <tr><td>Loan Amount Requested</td><td>${loan_amount:,}</td></tr>
+                <tr><td>Number of Credit Accounts</td><td>{num_accounts}</td></tr>
+                <tr><td>Past Delinquencies</td><td>{delinquencies}</td></tr>
+            </table>
+        </div>
+        
+        <div class="section">
+            <h2>Note on Methodology</h2>
+            <p>This report uses local model explanations (SHAP/LIME/Integrated Gradients) to identify the key factors contributing to the predicted credit risk. The results should be used for auditing purposes to ensure algorithmic fairness and compliance.</p>
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
+
+def save_credit_version(age, income, credit_score, debt_ratio, 
                         employment_years, loan_amount, num_accounts, 
-                        delinquencies, risk_output, feature_plot):
+                        delinquencies, risk_output, version_name=None,
+                        explanation_fig=None):
     """
-    Export analysis report (simplified - returns status message)
+    Save the current credit analysis version to global storage.
     """
-    _initialize_model()
+    global _saved_credit_versions
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not version_name:
+        # Better, more descriptive naming
+        model_snippet = _current_model_name.split('/')[-1] if '/' in _current_model_name else _current_model_name
+        version_name = f"📊 {model_snippet} | Score: {credit_score}, Income: ${income:,} | {timestamp}"
+        
+    data = {
+        'timestamp': timestamp,
+        'age': age,
+        'income': income,
+        'credit_score': credit_score,
+        'debt_ratio': debt_ratio,
+        'employment_years': employment_years,
+        'loan_amount': loan_amount,
+        'num_accounts': num_accounts,
+        'delinquencies': delinquencies,
+        'risk_output': risk_output,
+        'graph_b64': None
+    }
+
+    if explanation_fig:
+        try:
+            data['graph_b64'] = _fig_to_base64(explanation_fig)
+        except Exception as e:
+            print(f"Error converting credit figure to base64: {e}")
     
-    # Create report content
-    report = f"""
-    CREDIT RISK ANALYSIS REPORT
-    Generated: {timestamp}
+    # Generate HTML content for this version
+    data['html'] = get_credit_report_html(data)
     
-    APPLICANT INFORMATION:
-    - Age: {age} years
-    - Annual Income: ${income:,}
-    - Credit Score: {credit_score}
-    - Debt-to-Income Ratio: {debt_ratio}%
-    - Years at Current Job: {employment_years}
-    - Loan Amount Requested: ${loan_amount:,}
-    - Number of Credit Accounts: {num_accounts}
-    - Past Delinquencies: {delinquencies}
+    _saved_credit_versions[version_name] = data
     
-    ANALYSIS COMPLETED
-    Report would be saved as: credit_report_{timestamp.replace(':', '-')}.pdf
-    """
+    # Return updated list of version names for dropdown
+    return list(_saved_credit_versions.keys()), f"✅ Saved: {version_name}"
+
+
+def export_selected_credit_html(selected):
+    """Export a single selected version as an HTML file."""
+    global _saved_credit_versions
+    if not selected or selected not in _saved_credit_versions:
+        return None
     
-    return f"✅ **Report Generated Successfully**\n\nTimestamp: {timestamp}\n\nNote: In production, this would save a PDF report with detailed analysis and visualizations."
+    html = _saved_credit_versions[selected]['html']
+    temp_dir = tempfile.mkdtemp()
+    safe_label = "".join([c if c.isalnum() else "_" for c in selected])[:40]
+    path = os.path.join(temp_dir, f"credit_audit_{safe_label}.html")
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(html)
+    return path
+
+
+def export_all_credit_html():
+    """Export all saved versions consolidated into one HTML file."""
+    global _saved_credit_versions
+    if not _saved_credit_versions:
+        return None
+    
+    html = "<html><body><h1>All Saved Credit Risk Audits</h1><hr>"
+    for version_name, data in _saved_credit_versions.items():
+        html += f"<h2>{version_name}</h2>"
+        html += data['html']
+        html += "<hr>"
+    html += "</body></html>"
+    
+    temp_dir = tempfile.mkdtemp()
+    path = os.path.join(temp_dir, "all_credit_risk_audits.html")
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(html)
+    return path
+

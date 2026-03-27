@@ -1,0 +1,674 @@
+"""
+Builds an enhanced version of Tutorial_Getting_Started_with_MetaQuantus.ipynb
+with rich markdown explanations and matplotlib visualization cells.
+"""
+import json, uuid
+
+def cell_md(source: list[str], cell_id: str = None) -> dict:
+    cid = cell_id or uuid.uuid4().hex[:8]
+    return {
+        "cell_type": "markdown",
+        "id": cid,
+        "metadata": {},
+        "source": source,
+    }
+
+def cell_code(source: list[str], cell_id: str = None, outputs=None) -> dict:
+    cid = cell_id or uuid.uuid4().hex[:8]
+    return {
+        "cell_type": "code",
+        "execution_count": None,
+        "id": cid,
+        "metadata": {},
+        "outputs": outputs or [],
+        "source": source,
+    }
+
+cells = []
+
+# ─── Title ────────────────────────────────────────────────────────────────────
+cells.append(cell_md([
+    "# Getting Started with MetaQuantus\n",
+    "\n",
+    "This notebook gives the instructions for how to get started with **MetaQuantus**, with methods explained in the paper:\n",
+    "\n",
+    "> [**The Meta-Evaluation Problem in Explainable AI: Identifying Reliable Estimators with MetaQuantus**](https://arxiv.org/abs/2302.07265)\n",
+    "\n",
+    "We will use the **cMNIST / MNIST dataset** and a **ResNet-9 / LeNet model** for demonstration.  \n",
+    "Make sure to have **GPU enabled** for performance gains.\n",
+    "\n",
+    "---\n",
+    "\n",
+    "## What does MetaQuantus do?\n",
+    "\n",
+    "Explainable AI (XAI) methods produce *explanations* (e.g. saliency maps) that highlight which input features were most important for a model's prediction.  \n",
+    "But **how do we know which XAI method is the most trustworthy?**  \n",
+    "\n",
+    "MetaQuantus answers this by *meta-evaluating* XAI quality metrics using two kinds of stress tests:\n",
+    "\n",
+    "| Test type | What it checks |\n",
+    "|-----------|----------------|\n",
+    "| **Resilience test** | Does the metric stay stable when tiny, imperceptible noise is added? |\n",
+    "| **Adversary test** | Does the metric change meaningfully when large, destructive noise is added? |\n",
+    "\n",
+    "A **good** XAI quality metric should:\n",
+    "- Score **high** on the resilience test (robust to tiny noise)\n",
+    "- Score **high** on the adversary test (sensitive to large noise)\n",
+    "\n",
+    "MetaQuantus runs these tests over **model perturbations** (corrupting the model weights) and **input perturbations** (corrupting the input image), giving us four scores per metric per XAI method.\n",
+], "title_cell"))
+
+# ─── Section 0 – Installation ─────────────────────────────────────────────────
+cells.append(cell_md([
+    "## 0) Installation\n", "\n",
+    "First, clone the MetaQuantus repo and install dependencies.\n",
+    "If you are running in **Google Colab**, a GPU runtime is recommended *(Runtime → Change runtime type → GPU)*.\n",
+    "\n",
+    "> **Note:** Run the two install cells below **sequentially**, then **restart the runtime** when prompted\n",
+    "> (Runtime → Restart session). After restarting, skip back to Section 1 – do NOT re-run the install cells.\n",
+    "\n",
+    "### Why the restart?\n",
+    "MetaQuantus requires `numpy < 2.0`. Colab ships a newer numpy that is binary-incompatible\n",
+    "with this version of pandas. Re-installing both packages together and then restarting the kernel\n",
+    "ensures Python loads the freshly compiled binaries instead of the cached, mismatched ones.\n",
+], "install_md"))
+
+cells.append(cell_code([
+    "# Step 1 – clone repo and install MetaQuantus (pins numpy<2.0)\n",
+    "!git clone https://github.com/annahedstroem/MetaQuantus.git 2>/dev/null || echo 'Already cloned'\n",
+    "!pip install -q captum metaquantus\n",
+], "install1"))
+
+cells.append(cell_code([
+    "# Step 2 – reinstall numpy + pandas against the pinned numpy<2.0 to fix binary incompatibility,\n",
+    "# then restart the kernel so Python loads the fresh binaries.\n",
+    "import subprocess, sys\n",
+    "subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', '--force-reinstall',\n",
+    "                        'numpy<2.0', 'pandas'])\n",
+    "print('Packages reinstalled. Restarting kernel now...')\n",
+    "import IPython\n",
+    "IPython.Application.instance().kernel.do_shutdown(restart=True)\n",
+], "install2"))
+
+# ─── Section 1 – Imports ──────────────────────────────────────────────────────
+cells.append(cell_md([
+    "## 1) Preliminaries\n", "\n",
+    "### 1.0 Imports & device check\n", "\n",
+    "We import all required libraries and check whether a GPU is available.\n",
+    "MetaQuantus is built on top of **Quantus** (the XAI evaluation library) and **PyTorch**.\n",
+], "sec1_md"))
+
+cells.append(cell_code([
+    "from IPython.display import clear_output, display\n",
+    "import sys\n",
+    "from pathlib import Path\n",
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "import matplotlib\n",
+    "import matplotlib.pyplot as plt\n",
+    "import matplotlib.cm as cm\n",
+    "import warnings\n",
+    "import torch\n",
+    "import captum\n",
+    "import quantus\n",
+    "warnings.filterwarnings('ignore', category=UserWarning)\n",
+    "clear_output()\n",
+    "\n",
+    "device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')\n",
+    "print(f'Using device: {device}')\n",
+    "try:\n",
+    "    print('GPU:', torch.cuda.get_device_name(0))\n",
+    "    !nvidia-smi\n",
+    "except:\n",
+    "    print('No GPU enabled – running on CPU (may be slow).')\n",
+], "imports_cell"))
+
+# ─── Paths ─────────────────────────────────────────────────────────────────────
+cells.append(cell_md([
+    "### 1.1 Configure paths\n", "\n",
+    "Set the paths to the asset folder that contains model checkpoints and datasets.\n",
+    "The block below auto-detects whether we are running in **Google Colab** or locally.\n",
+], "paths_md"))
+
+cells.append(cell_code([
+    "try:\n",
+    "    import google.colab\n",
+    "    IN_COLAB = True\n",
+    "except ImportError:\n",
+    "    IN_COLAB = False\n",
+    "\n",
+    "if IN_COLAB:\n",
+    "    from google.colab import drive\n",
+    "    drive.mount('/content/drive', force_remount=True)\n",
+    "    PATH_ASSETS = '/content/MetaQuantus/tests/assets/'\n",
+    "    path = '/content/drive/MyDrive/Projects'\n",
+    "else:\n",
+    "    PATH_ASSETS = '../assets/'   # adjust if running outside the MetaQuantus repo\n",
+    "    path = '../../'\n",
+    "\n",
+    "PATH_DATA = PATH_ASSETS + 'data/'\n",
+    "sys.path.append(f'{path}/MetaQuantus')\n",
+    "\n",
+    "import metaquantus\n",
+    "from metaquantus import setup_dataset_models, setup_xai_settings, setup_estimators\n",
+    "print('MetaQuantus imported successfully.')\n",
+], "paths_cell"))
+
+# ─── Load data ─────────────────────────────────────────────────────────────────
+cells.append(cell_md([
+    "### 1.2 Load data and model\n", "\n",
+    "We load the **MNIST** dataset (hand-written digits 0-9) and a pre-trained **LeNet** classifier.\n",
+    "MetaQuantus ships with helper functions that package the dataset, model, and all evaluation hyper-parameters into a single dictionary.\n",
+    "\n",
+    "The five sample images will be visualised so we know what we're working with.\n",
+], "data_md"))
+
+cells.append(cell_code([
+    "dataset_name = 'MNIST'\n",
+    "\n",
+    "dataset_settings, model_name = setup_dataset_models(\n",
+    "    dataset_name=dataset_name, path_assets=PATH_ASSETS, device=device\n",
+    ")\n",
+    "dataset_kwargs = dataset_settings[dataset_name]['estimator_kwargs']\n",
+    "\n",
+    "model   = dataset_settings[dataset_name]['models']['LeNet'].eval()\n",
+    "x_batch = dataset_settings[dataset_name]['x_batch']   # shape: (N, C, H, W)\n",
+    "y_batch = dataset_settings[dataset_name]['y_batch']   # ground-truth class labels\n",
+    "s_batch = dataset_settings[dataset_name]['s_batch']   # segmentation masks\n",
+    "\n",
+    "# ── Visualise the first 5 samples ──────────────────────────────────────────\n",
+    "fig, axes = plt.subplots(1, 5, figsize=(12, 3))\n",
+    "fig.suptitle('Sample MNIST images used for evaluation', fontsize=14, fontweight='bold')\n",
+    "for i in range(5):\n",
+    "    img = np.moveaxis(x_batch[i], 0, -1).reshape(28, 28)\n",
+    "    axes[i].imshow(img, cmap='gray_r')\n",
+    "    axes[i].set_title(f'Label: {y_batch[i]}', fontsize=11)\n",
+    "    axes[i].axis('off')\n",
+    "plt.tight_layout()\n",
+    "plt.show()\n",
+    "print(f'x_batch shape: {x_batch.shape}  |  Model: {model_name}')\n",
+], "data_cell"))
+
+# ─── Load explanations ─────────────────────────────────────────────────────────
+cells.append(cell_md([
+    "### 1.3 Load XAI methods and generate explanations\n", "\n",
+    "We compare two XAI methods:\n",
+    "- **LayerGradCam** – gradient-weighted class activation maps from a convolutional layer. Good at coarse spatial localisation.\n",
+    "- **Saliency** – plain input gradients (∂output/∂input). Fast and simple, but can be noisy.\n",
+    "\n",
+    "We generate attribution maps for the first 5 images and visualise them side-by-side.\n",
+], "xai_md"))
+
+cells.append(cell_code([
+    "xai_setting = ['LayerGradCam', 'Saliency']\n",
+    "xai_methods = setup_xai_settings(\n",
+    "    xai_settings=xai_setting,\n",
+    "    gc_layer=dataset_settings[dataset_name]['gc_layers'][model_name],\n",
+    "    img_size=dataset_kwargs['img_size'],\n",
+    "    nr_channels=dataset_kwargs['nr_channels'],\n",
+    ")\n",
+    "\n",
+    "# Generate attributions\n",
+    "explanations = {}\n",
+    "for method, kwargs in xai_methods.items():\n",
+    "    m = dataset_settings[dataset_name]['models']['LeNet'].eval().cpu()\n",
+    "    explanations[method] = quantus.explain(\n",
+    "        model=m, inputs=x_batch[:5], targets=y_batch[:5],\n",
+    "        **{'method': method, **kwargs}\n",
+    "    )\n",
+    "\n",
+    "# Visualise attributions\n",
+    "n_methods = len(xai_methods)\n",
+    "fig, axes = plt.subplots(n_methods + 1, 5, figsize=(13, 2.5 * (n_methods + 1)))\n",
+    "fig.suptitle('Input images and their XAI attributions', fontsize=14, fontweight='bold')\n",
+    "\n",
+    "for i in range(5):\n",
+    "    img = np.moveaxis(x_batch[i], 0, -1).reshape(28, 28)\n",
+    "    axes[0, i].imshow(img, cmap='gray_r')\n",
+    "    axes[0, i].set_title(f'Input  (y={y_batch[i]})', fontsize=9)\n",
+    "    axes[0, i].axis('off')\n",
+    "\n",
+    "for row, (method, attr) in enumerate(explanations.items(), start=1):\n",
+    "    for i in range(5):\n",
+    "        a = attr[i].squeeze()\n",
+    "        axes[row, i].imshow(a, cmap='RdBu_r', vmin=-np.abs(a).max(), vmax=np.abs(a).max())\n",
+    "        axes[row, i].axis('off')\n",
+    "    axes[row, 0].set_ylabel(method, fontsize=10, rotation=0, labelpad=80, va='center')\n",
+    "\n",
+    "plt.tight_layout()\n",
+    "plt.show()\n",
+], "xai_cell"))
+
+# ─── Load estimators ───────────────────────────────────────────────────────────
+cells.append(cell_md([
+    "### 1.4 Load quality estimators (Quantus metrics)\n", "\n",
+    "MetaQuantus wraps **Quantus** metrics, organised into five *categories*:\n",
+    "\n",
+    "| Category | Metrics included | Best score |\n",
+    "|----------|-----------------|------------|\n",
+    "| **Robustness** | Max-Sensitivity, Local Lipschitz Estimate | lower ↓ |\n",
+    "| **Randomisation** | Random Logit, Model Parameter Randomisation | lower ↓ |\n",
+    "| **Faithfulness** | Faithfulness Correlation, Pixel-Flipping | higher ↑ |\n",
+    "| **Complexity** | Sparseness, Complexity | depends |\n",
+    "| **Localisation** | Pointing-Game, Relevance Mass Accuracy | higher ↑ |\n",
+    "\n",
+    "The `score_direction` field tells MetaQuantus whether a **higher** or **lower** raw score is better.\n",
+], "estimators_md"))
+
+cells.append(cell_code([
+    "estimators = setup_estimators(\n",
+    "    features=dataset_kwargs['features'],\n",
+    "    num_classes=dataset_kwargs['num_classes'],\n",
+    "    img_size=dataset_kwargs['img_size'],\n",
+    "    percentage=dataset_kwargs['percentage'],\n",
+    "    patch_size=dataset_kwargs['patch_size'],\n",
+    "    perturb_baseline=dataset_kwargs['perturb_baseline'],\n",
+    ")\n",
+    "\n",
+    "# Pretty-print a summary table\n",
+    "rows = []\n",
+    "for cat, metrics in estimators.items():\n",
+    "    for met_name, met_info in metrics.items():\n",
+    "        rows.append({'Category': cat, 'Metric': met_name, 'Score direction': met_info['score_direction']})\n",
+    "df_estimators = pd.DataFrame(rows)\n",
+    "display(df_estimators.to_string(index=False))\n",
+], "estimators_cell"))
+
+# ─── Section 2 ─────────────────────────────────────────────────────────────────
+cells.append(cell_md([
+    "---\n",
+    "## 2) Run Meta-Evaluation\n", "\n",
+    "### 2.1 Define the test suite\n", "\n",
+    "We create **four perturbation tests**.  \n",
+    "Each test modifies either the *model weights* or the *input image* and re-runs the XAI quality metric.  \n",
+    "The resulting distribution of scores is compared to the baseline (un-perturbed) distribution.\n",
+    "\n",
+    "| Test name | Perturbation target | Noise std | Type |\n",
+    "|-----------|-------------------|-----------|------|\n",
+    "| Model Resilience | model weights | 0.001 (tiny) | Resilience |\n",
+    "| Model Adversary  | model weights | 2.0 (large) | Adversary |\n",
+    "| Input Resilience | input image   | 0.001 (tiny) | Resilience |\n",
+    "| Input Adversary  | input image   | 5.0 (large)  | Adversary |\n",
+    "\n",
+    "> **What to expect:** A reliable metric should be *stable* under the resilience tests and *sensitive* under the adversary tests.\n",
+], "sec2_md"))
+
+cells.append(cell_code([
+    "from metaquantus import ModelPerturbationTest, InputPerturbationTest\n",
+    "from metaquantus import MetaEvaluation, MetaEvaluationBenchmarking\n",
+    "\n",
+    "test_suite = {\n",
+    "    'Model Resilience Test': ModelPerturbationTest(\n",
+    "        noise_type='multiplicative', mean=1.0, std=0.001, type='Resilience'\n",
+    "    ),\n",
+    "    'Model Adversary Test': ModelPerturbationTest(\n",
+    "        noise_type='multiplicative', mean=1.0, std=2.0, type='Adversary'\n",
+    "    ),\n",
+    "    'Input Resilience Test': InputPerturbationTest(\n",
+    "        noise=0.001, type='Resilience'\n",
+    "    ),\n",
+    "    'Input Adversary Test': InputPerturbationTest(\n",
+    "        noise=5.0, type='Adversary'\n",
+    "    ),\n",
+    "}\n",
+    "print('Test suite defined with', len(test_suite), 'tests:')\n",
+    "for name in test_suite:\n",
+    "    print(' •', name)\n",
+], "testsuite_cell"))
+
+# ─── Run MetaEvaluation ────────────────────────────────────────────────────────
+cells.append(cell_md([
+    "### 2.2 Run MetaQuantus on the Sparseness metric\n", "\n",
+    "We run the meta-evaluation on the **Sparseness** metric (*Chalasani et al., 2020*),\n",
+    "which uses the Gini index to measure how concentrated (sparse) the attribution map is.\n",
+    "A higher Gini = more focused explanations.\n",
+    "\n",
+    "**Parameters:**\n",
+    "- `iterations = 5` – number of times each perturbation test is repeated (averaging reduces variance)\n",
+    "- `nr_perturbations = 10` – how many perturbed models/inputs are evaluated per iteration\n",
+    "\n",
+    "The `MetaEvaluation` object stores per-test IAC (Inter-rater Agreement Coefficient) scores\n",
+    "between 0 and 1, where **1 = perfect agreement with expected ordering**.\n",
+], "run_md"))
+
+cells.append(cell_code([
+    "estimator_category = 'Complexity'\n",
+    "estimator_name = 'Sparseness'\n",
+    "\n",
+    "iters = 5\n",
+    "K = 10\n",
+    "\n",
+    "meta_evaluator = MetaEvaluation(\n",
+    "    test_suite=test_suite,\n",
+    "    xai_methods=xai_methods,\n",
+    "    iterations=iters,\n",
+    "    nr_perturbations=K,\n",
+    "    write_to_file=False,\n",
+    ")\n",
+    "\n",
+    "meta_evaluator(\n",
+    "    estimator=estimators[estimator_category][estimator_name]['init'],\n",
+    "    model=dataset_settings[dataset_name]['models'][model_name],\n",
+    "    x_batch=dataset_settings[dataset_name]['x_batch'],\n",
+    "    y_batch=dataset_settings[dataset_name]['y_batch'],\n",
+    "    a_batch=None,\n",
+    "    s_batch=dataset_settings[dataset_name]['s_batch'],\n",
+    "    device=device,\n",
+    "    score_direction=estimators[estimator_category][estimator_name]['score_direction'],\n",
+    ")\n",
+    "print('Meta-evaluation complete.')\n",
+], "run_cell"))
+
+# ─── Visualise MetaEvaluation results ─────────────────────────────────────────
+cells.append(cell_md([
+    "### 2.3 Visualise meta-evaluation results\n", "\n",
+    "The four IAC scores below quantify how *reliable* the **Sparseness** metric is\n",
+    "under each perturbation condition, for each XAI method.\n",
+    "\n",
+    "- **IAC ≈ 1** → the metric behaves exactly as expected (good!)\n",
+    "- **IAC ≈ 0** → the metric fails to distinguish perturbed from clean (bad)\n",
+    "- **IAC < 0** → the metric is *anti-correlated* with expectation (very bad)\n",
+    "\n",
+    "The heatmap makes it easy to spot which XAI method x test combination performs best.\n",
+], "viz2_md"))
+
+cells.append(cell_code([
+    "# ── Extract IAC scores from the meta_evaluator results dict ────────────────\n",
+    "# meta_evaluator.results_meta_consistency_scores is structured as:\n",
+    "#   { test_name: { xai_method: float_score, ... }, ... }\n",
+    "\n",
+    "results = meta_evaluator.results_meta_consistency_scores  # dict of dicts\n",
+    "\n",
+    "test_names  = list(results.keys())\n",
+    "method_names = list(xai_methods.keys())\n",
+    "\n",
+    "# Build a 2-D array: rows = tests, cols = XAI methods\n",
+    "score_matrix = np.array(\n",
+    "    [[results[t].get(m, np.nan) for m in method_names] for t in test_names]\n",
+    ")\n",
+    "\n",
+    "# ── Print a readable table ──────────────────────────────────────────────────\n",
+    "df_results = pd.DataFrame(score_matrix, index=test_names, columns=method_names)\n",
+    "print(f'\\nIAC scores for [{estimator_name}] metric:\\n')\n",
+    "print(df_results.round(3).to_string())\n",
+    "\n",
+    "# ── Heatmap ────────────────────────────────────────────────────────────────\n",
+    "fig, ax = plt.subplots(figsize=(7, 4))\n",
+    "cax = ax.imshow(score_matrix, cmap='RdYlGn', vmin=0, vmax=1, aspect='auto')\n",
+    "fig.colorbar(cax, ax=ax, label='IAC score (0 = bad, 1 = good)')\n",
+    "\n",
+    "ax.set_xticks(range(len(method_names)))\n",
+    "ax.set_xticklabels(method_names, fontsize=11)\n",
+    "ax.set_yticks(range(len(test_names)))\n",
+    "ax.set_yticklabels(test_names, fontsize=10)\n",
+    "ax.set_title(f'MetaQuantus IAC scores – [{estimator_name}] metric', fontsize=13, fontweight='bold')\n",
+    "\n",
+    "for i in range(len(test_names)):\n",
+    "    for j in range(len(method_names)):\n",
+    "        val = score_matrix[i, j]\n",
+    "        txt = f'{val:.2f}' if not np.isnan(val) else 'N/A'\n",
+    "        ax.text(j, i, txt, ha='center', va='center', fontsize=12,\n",
+    "                color='black' if 0.3 < val < 0.7 else 'white')\n",
+    "\n",
+    "plt.tight_layout()\n",
+    "plt.show()\n",
+    "\n",
+    "# ── Bar chart: average IAC per XAI method ──────────────────────────────────\n",
+    "avg_scores = np.nanmean(score_matrix, axis=0)\n",
+    "colors = ['#2ecc71' if s >= 0.5 else '#e74c3c' for s in avg_scores]\n",
+    "\n",
+    "fig, ax = plt.subplots(figsize=(6, 4))\n",
+    "bars = ax.bar(method_names, avg_scores, color=colors, edgecolor='white', linewidth=1.5)\n",
+    "ax.set_ylim(0, 1)\n",
+    "ax.axhline(0.5, color='gray', linestyle='--', linewidth=1, label='Threshold (0.5)')\n",
+    "ax.set_ylabel('Average IAC score', fontsize=12)\n",
+    "ax.set_title(f'Average reliability: [{estimator_name}] across all tests', fontsize=12, fontweight='bold')\n",
+    "ax.legend(fontsize=10)\n",
+    "for bar, val in zip(bars, avg_scores):\n",
+    "    ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,\n",
+    "            f'{val:.2f}', ha='center', fontsize=12, fontweight='bold')\n",
+    "plt.tight_layout()\n",
+    "plt.show()\n",
+    "\n",
+    "best_method = method_names[int(np.argmax(avg_scores))]\n",
+    "print(f'\\n✅ Leading XAI method for [{estimator_name}]: {best_method} (avg IAC = {avg_scores.max():.3f})')\n",
+], "viz2_cell"))
+
+# ─── Section 3 – Benchmarking ─────────────────────────────────────────────────
+cells.append(cell_md([
+    "---\n",
+    "## 3) Run Benchmarking\n", "\n",
+    "### 3.1 Define a broader set of Localisation metrics\n", "\n",
+    "Benchmarking extends the meta-evaluation to **multiple metrics at once**,\n",
+    "letting us rank them and identify which are most reliable overall.\n",
+    "\n",
+    "We test four **Localisation** metrics:\n",
+    "- **Pointing-Game** – is the highest-attribution pixel inside the ground-truth segment?\n",
+    "- **Top-K Intersection** – do the top-K attributed pixels overlap with the segment?\n",
+    "- **Relevance Rank Accuracy** – fraction of top-ranked pixels that are inside the segment.\n",
+    "- **Relevance Mass Accuracy** – fraction of total attribution weight inside the segment.\n",
+], "sec3_md"))
+
+cells.append(cell_code([
+    "estimators_localisation = {\n",
+    "    'Localisation': {\n",
+    "        'Pointing-Game': {\n",
+    "            'init': quantus.PointingGame(\n",
+    "                abs=False, normalise=True,\n",
+    "                normalise_func=quantus.normalise_func.normalise_by_max,\n",
+    "                return_aggregate=False, aggregate_func=np.mean,\n",
+    "                disable_warnings=True,\n",
+    "            ),\n",
+    "            'score_direction': 'higher',\n",
+    "        },\n",
+    "        'Top-K Intersection': {\n",
+    "            'init': quantus.TopKIntersection(\n",
+    "                k=10, abs=False, normalise=True,\n",
+    "                normalise_func=quantus.normalise_func.normalise_by_max,\n",
+    "                return_aggregate=False, aggregate_func=np.mean,\n",
+    "                disable_warnings=True,\n",
+    "            ),\n",
+    "            'score_direction': 'higher',\n",
+    "        },\n",
+    "        'Relevance Rank Accuracy': {\n",
+    "            'init': quantus.RelevanceRankAccuracy(\n",
+    "                abs=False, normalise=True,\n",
+    "                normalise_func=quantus.normalise_func.normalise_by_max,\n",
+    "                return_aggregate=False, aggregate_func=np.mean,\n",
+    "                disable_warnings=True,\n",
+    "            ),\n",
+    "            'score_direction': 'higher',\n",
+    "        },\n",
+    "        'Relevance Mass Accuracy': {\n",
+    "            'init': quantus.RelevanceMassAccuracy(\n",
+    "                abs=False, normalise=True,\n",
+    "                normalise_func=quantus.normalise_func.normalise_by_max,\n",
+    "                return_aggregate=False, aggregate_func=np.mean,\n",
+    "                disable_warnings=True,\n",
+    "            ),\n",
+    "            'score_direction': 'higher',\n",
+    "        },\n",
+    "    }\n",
+    "}\n",
+    "print('Localisation estimators configured:', list(estimators_localisation['Localisation'].keys()))\n",
+], "loc_cell"))
+
+# ─── Run benchmarking ──────────────────────────────────────────────────────────
+cells.append(cell_md([
+    "### 3.2 Run the benchmark\n", "\n",
+    "This loops over every combination of dataset × model × metric and calls `MetaEvaluation`\n",
+    "using the *same* `meta_evaluator` settings defined above.  \n",
+    "**Note:** this can take several minutes on CPU.\n",
+], "bench_run_md"))
+
+cells.append(cell_code([
+    "benchmark = MetaEvaluationBenchmarking(\n",
+    "    master=meta_evaluator,\n",
+    "    estimators=estimators_localisation,\n",
+    "    experimental_settings=dataset_settings,\n",
+    "    device=device,\n",
+    ")()\n",
+    "print('Benchmarking complete.')\n",
+], "bench_cell"))
+
+# ─── Visualise benchmark ───────────────────────────────────────────────────────
+cells.append(cell_md([
+    "### 3.3 Visualise benchmark results\n", "\n",
+    "Now we compare **all four Localisation metrics** side-by-side,\n",
+    "for each XAI method, across all four perturbation tests.\n",
+    "\n",
+    "The grouped bar chart below shows average IAC scores — higher is better.\n",
+    "Metrics that consistently score above **0.5** (dashed line) can be considered reliable.\n",
+    "\n",
+    "The \"**Leading metric**\" is the one that is best at revealing differences\n",
+    "between XAI methods — i.e., the one that has the highest discriminative power.\n",
+], "viz3_md"))
+
+cells.append(cell_code([
+    "# ── Safely extract benchmark scores ────────────────────────────────────────\n",
+    "# benchmark is a dict: { dataset: { model: { category: { metric: MetaEvaluation } } } }\n",
+    "\n",
+    "bench_rows = []\n",
+    "for ds, ds_val in benchmark.items():\n",
+    "    for model_key, model_val in ds_val.items():\n",
+    "        for cat, cat_val in model_val.items():\n",
+    "            for metric_key, me in cat_val.items():\n",
+    "                # me.results_meta_consistency_scores = { test_name: { xai_method: score } }\n",
+    "                for test_name, test_scores in me.results_meta_consistency_scores.items():\n",
+    "                    for xai_m, score in test_scores.items():\n",
+    "                        bench_rows.append({\n",
+    "                            'Dataset': ds, 'Model': model_key,\n",
+    "                            'Metric': metric_key,\n",
+    "                            'Test': test_name, 'XAI Method': xai_m,\n",
+    "                            'IAC': score,\n",
+    "                        })\n",
+    "\n",
+    "df_bench = pd.DataFrame(bench_rows)\n",
+    "print('Benchmark result shape:', df_bench.shape)\n",
+    "display(df_bench.head(10))\n",
+], "bench_extract_cell"))
+
+cells.append(cell_code([
+    "# ── Average IAC per (Metric, XAI Method) over all tests ───────────────────\n",
+    "pivot = df_bench.groupby(['Metric', 'XAI Method'])['IAC'].mean().unstack('XAI Method')\n",
+    "\n",
+    "fig, ax = plt.subplots(figsize=(10, 5))\n",
+    "x = np.arange(len(pivot.index))\n",
+    "width = 0.8 / len(pivot.columns)\n",
+    "palette = ['#3498db', '#e67e22', '#9b59b6', '#1abc9c']\n",
+    "\n",
+    "for i, (method, col) in enumerate(pivot.items()):\n",
+    "    offset = (i - len(pivot.columns) / 2 + 0.5) * width\n",
+    "    bars = ax.bar(x + offset, col.values, width=width * 0.9,\n",
+    "                  label=method, color=palette[i % len(palette)], alpha=0.88)\n",
+    "\n",
+    "ax.set_xticks(x)\n",
+    "ax.set_xticklabels(pivot.index, rotation=20, ha='right', fontsize=10)\n",
+    "ax.set_ylim(0, 1)\n",
+    "ax.axhline(0.5, color='gray', linestyle='--', linewidth=1.2, label='Threshold (0.5)')\n",
+    "ax.set_ylabel('Average IAC score', fontsize=12)\n",
+    "ax.set_title('Benchmarking: Localisation metrics × XAI methods', fontsize=13, fontweight='bold')\n",
+    "ax.legend(fontsize=10, loc='lower right')\n",
+    "plt.tight_layout()\n",
+    "plt.show()\n",
+    "\n",
+    "# ── Heatmap: metric vs test ────────────────────────────────────────────────\n",
+    "pivot2 = df_bench.groupby(['Metric', 'Test'])['IAC'].mean().unstack('Test')\n",
+    "\n",
+    "fig2, ax2 = plt.subplots(figsize=(10, 4))\n",
+    "cax2 = ax2.imshow(pivot2.values, cmap='RdYlGn', vmin=0, vmax=1, aspect='auto')\n",
+    "fig2.colorbar(cax2, ax=ax2, label='IAC (0=bad, 1=good)')\n",
+    "ax2.set_xticks(range(len(pivot2.columns)))\n",
+    "ax2.set_xticklabels(pivot2.columns, rotation=20, ha='right', fontsize=9)\n",
+    "ax2.set_yticks(range(len(pivot2.index)))\n",
+    "ax2.set_yticklabels(pivot2.index, fontsize=10)\n",
+    "ax2.set_title('Metric reliability by perturbation test (avg over XAI methods)', fontsize=12, fontweight='bold')\n",
+    "for i in range(len(pivot2.index)):\n",
+    "    for j in range(len(pivot2.columns)):\n",
+    "        v = pivot2.values[i, j]\n",
+    "        ax2.text(j, i, f'{v:.2f}', ha='center', va='center', fontsize=10,\n",
+    "                 color='black' if 0.3 < v < 0.7 else 'white')\n",
+    "plt.tight_layout()\n",
+    "plt.show()\n",
+], "bench_viz_cell"))
+
+# ─── Summary Cell ──────────────────────────────────────────────────────────────
+cells.append(cell_md([
+    "---\n",
+    "## 4) Summary & Interpretation\n", "\n",
+    "The cell below automatically identifies which metric and XAI method lead in each category.\n",
+], "summary_md"))
+
+cells.append(cell_code([
+    "# ── Overall summary ────────────────────────────────────────────────────────\n",
+    "avg_by_metric = df_bench.groupby('Metric')['IAC'].mean().sort_values(ascending=False)\n",
+    "avg_by_xai    = df_bench.groupby('XAI Method')['IAC'].mean().sort_values(ascending=False)\n",
+    "avg_by_test   = df_bench.groupby('Test')['IAC'].mean().sort_values(ascending=False)\n",
+    "\n",
+    "print('=' * 60)\n",
+    "print('SUMMARY – MetaQuantus Benchmarking Results')\n",
+    "print('=' * 60)\n",
+    "\n",
+    "print('\\nMetrics ranked by average IAC (higher = more reliable):')\n",
+    "for rank, (met, sc) in enumerate(avg_by_metric.items(), 1):\n",
+    "    flag = ' ← LEADING' if rank == 1 else ''\n",
+    "    print(f'  {rank}. {met:<30} IAC = {sc:.3f}{flag}')\n",
+    "\n",
+    "print('\\nXAI methods ranked by average IAC (higher = more faithfully measured):')\n",
+    "for rank, (xai, sc) in enumerate(avg_by_xai.items(), 1):\n",
+    "    flag = ' ← LEADING' if rank == 1 else ''\n",
+    "    print(f'  {rank}. {xai:<30} IAC = {sc:.3f}{flag}')\n",
+    "\n",
+    "print('\\nPerturbation tests ranked by discriminative power:')\n",
+    "for rank, (test, sc) in enumerate(avg_by_test.items(), 1):\n",
+    "    flag = ' ← most discriminative' if rank == 1 else ''\n",
+    "    print(f'  {rank}. {test:<35} IAC = {sc:.3f}{flag}')\n",
+    "\n",
+    "# Final bar chart – metric ranking\n",
+    "fig, ax = plt.subplots(figsize=(8, 4))\n",
+    "colors = ['#2ecc71' if v >= 0.5 else '#e74c3c' for v in avg_by_metric.values]\n",
+    "ax.barh(avg_by_metric.index[::-1], avg_by_metric.values[::-1], color=colors[::-1], edgecolor='white')\n",
+    "ax.axvline(0.5, color='gray', linestyle='--', linewidth=1.2, label='0.5 threshold')\n",
+    "ax.set_xlabel('Average IAC score', fontsize=12)\n",
+    "ax.set_title('Localisation metric ranking\\n(higher = more reliable for evaluating XAI)', fontsize=12, fontweight='bold')\n",
+    "for i, (met, sc) in enumerate(avg_by_metric.iloc[::-1].items()):\n",
+    "    ax.text(sc + 0.01, i, f'{sc:.3f}', va='center', fontsize=10)\n",
+    "ax.legend(fontsize=10)\n",
+    "plt.tight_layout()\n",
+    "plt.show()\n",
+    "\n",
+    "print('\\n[RESULT] The leading metric above is the most trustworthy lens for comparing XAI methods on MNIST.')\n",
+    "print('   Use it when you need a single reliable number to rank your explanations.')\n",
+], "summary_cell"))
+
+# ─── Assemble notebook ─────────────────────────────────────────────────────────
+notebook = {
+    "nbformat": 4,
+    "nbformat_minor": 5,
+    "metadata": {
+        "kernelspec": {"display_name": "Python 3", "name": "python3"},
+        "language_info": {
+            "codemirror_mode": {"name": "ipython", "version": 3},
+            "file_extension": ".py",
+            "mimetype": "text/x-python",
+            "name": "python",
+            "pygments_lexer": "ipython3",
+            "version": "3.10.0",
+        },
+        "colab": {"provenance": [], "gpuType": "L4"},
+        "accelerator": "GPU",
+    },
+    "cells": cells,
+}
+
+out_path = "Tutorial_Getting_Started_with_MetaQuantus.ipynb"
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(notebook, f, indent=2, ensure_ascii=False)
+
+print(f"[OK] Notebook written to {out_path}")
+print(f"   Total cells: {len(cells)}")
+
+# Quick sanity check: parse it back
+with open(out_path, encoding="utf-8") as f:
+    nb = json.load(f)
+print(f"   Verified: {len(nb['cells'])} cells in output file.")

@@ -300,7 +300,7 @@ CALIBRATION_WIDGET_HTML = """
     </div>
     <div class="draggable" draggable="true" data-value="Robustness">
         <strong>Robustness</strong>
-        <div class="item-subtitle">not vulnerable to <a href="https://arxiv.org/abs/1806.08049" target="_blank" style="color: #2980b9; text-decoration: underline;">adversarial perturbation attacks</a> (click for paper)</div>
+        <div class="item-subtitle">not vulnerable to adversarial perturbation attacks</div>
     </div>
 </div>
 """
